@@ -1,5 +1,5 @@
--- Animal Hospital - One Button Utility
--- Single toggle button: turns all supported automations on/off.
+-- Animal Hospital - One Button Utility (Desk-safe build)
+-- Focus: reception check-in first, emergencies second, no blind remote spam.
 
 if getgenv().AH_ONEBTN_LOADED then
     warn("[AH] Script already loaded.")
@@ -12,18 +12,21 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
 local StarterGui = game:GetService("StarterGui")
 local Lighting = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
 
 local LP = Players.LocalPlayer
 
 local cfg = {
-    interactRange = 14,
-    collectRange = 22,
-    loopDelay = 0.12,
-    walkSpeed = 24,
-    jumpPower = 55,
-    emergencyRange = 60,
-    buyCooldown = 2.5,
-    actionCooldown = 0.25
+    deskRange = 10,
+    interactRange = 8,
+    emergencyRange = 45,
+    loopDelay = 0.35,
+    scanRefresh = 4,
+    walkSpeed = 22,
+    jumpPower = 50,
+    buyCooldown = 3,
+    actionCooldown = 0.4,
+    lowGfxBatch = 120
 }
 
 local state = {
@@ -31,7 +34,33 @@ local state = {
     runtimeConns = {},
     lastBuyTick = 0,
     lastActionTick = 0,
-    gfxApplied = false
+    gfxApplied = false,
+    gfxIndex = 1,
+    cachedPrompts = {},
+    lastScanTick = 0
+}
+
+local deskKeywords = {
+    "check", "greet", "photo", "camera", "cctv", "shutter", "admit", "register",
+    "inspect", "window", "patient", "form", "scan", "look", "take", "desk",
+    "reception", "counter", "print", "compare", "open", "close", "raise", "lower"
+}
+
+local coffeeKeywords = {
+    "coffee", "cafe", "latte", "espresso", "cup", "drink", "machine", "brew"
+}
+
+local buyKeywords = {
+    "buy", "shop", "purchase", "store", "vendor", "medicine", "bandage", "kit", "potion", "extinguisher"
+}
+
+local useHealKeywords = {
+    "med", "medicine", "bandage", "heal", "firstaid", "potion", "pill", "syringe", "ointment", "chocolate"
+}
+
+local emergencyKeywords = {
+    "fire", "burn", "extinguish", "faint", "unconscious", "revive", "carry", "rescue",
+    "critical", "ritual", "candle", "bedmonster", "syrup", "maple"
 }
 
 local function notify(msg)
@@ -42,6 +71,16 @@ local function notify(msg)
             Duration = 3
         })
     end)
+end
+
+local function containsKeyword(name, keywords)
+    name = string.lower(name or "")
+    for _, k in ipairs(keywords) do
+        if string.find(name, k, 1, true) then
+            return true
+        end
+    end
+    return false
 end
 
 local function getRoot(character)
@@ -60,12 +99,271 @@ local function getHumanoid(character)
     return character:FindFirstChildOfClass("Humanoid")
 end
 
+local function getPromptPart(prompt)
+    local parent = prompt.Parent
+    if not parent then
+        return nil
+    end
+    if parent:IsA("BasePart") then
+        return parent
+    end
+    if parent:IsA("Attachment") and parent.Parent and parent.Parent:IsA("BasePart") then
+        return parent.Parent
+    end
+    if parent:IsA("Model") then
+        return parent.PrimaryPart or parent:FindFirstChildWhichIsA("BasePart")
+    end
+    return parent:FindFirstChildWhichIsA("BasePart", true)
+end
+
 local function distanceTo(part)
     local root = getRoot()
     if not root or not part or not part:IsA("BasePart") then
         return math.huge
     end
     return (root.Position - part.Position).Magnitude
+end
+
+local function canAct()
+    return os.clock() - state.lastActionTick >= cfg.actionCooldown
+end
+
+local function markAction()
+    state.lastActionTick = os.clock()
+end
+
+local function firePrompt(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Enabled then
+        return false
+    end
+    local ok = pcall(function()
+        if typeof(fireproximityprompt) == "function" then
+            fireproximityprompt(prompt, 0)
+            if prompt.HoldDuration and prompt.HoldDuration > 0 then
+                task.wait(prompt.HoldDuration + 0.05)
+                fireproximityprompt(prompt, 1)
+            end
+        end
+    end)
+    return ok
+end
+
+local function refreshPromptCache()
+    if os.clock() - state.lastScanTick < cfg.scanRefresh then
+        return
+    end
+    state.lastScanTick = os.clock()
+    table.clear(state.cachedPrompts)
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") and obj.Enabled then
+            local part = getPromptPart(obj)
+            if part then
+                table.insert(state.cachedPrompts, {
+                    prompt = obj,
+                    part = part,
+                    name = string.lower(obj.Name .. " " .. obj.ActionText .. " " .. obj.ObjectText)
+                })
+            end
+        end
+    end
+end
+
+local function getNearbyPrompts(maxRange, keywords)
+    refreshPromptCache()
+    local list = {}
+    for _, item in ipairs(state.cachedPrompts) do
+        if item.prompt.Parent and distanceTo(item.part) <= maxRange then
+            if not keywords or containsKeyword(item.name, keywords) then
+                table.insert(list, item)
+            end
+        end
+    end
+    table.sort(list, function(a, b)
+        return distanceTo(a.part) < distanceTo(b.part)
+    end)
+    return list
+end
+
+local function clickGuiButtons(keywords)
+    local pg = LP:FindFirstChild("PlayerGui")
+    if not pg then
+        return
+    end
+
+    for _, gui in ipairs(pg:GetDescendants()) do
+        if (gui:IsA("TextButton") or gui:IsA("ImageButton")) and gui.Visible then
+            local label = string.lower(gui.Name .. " " .. (gui.Text or ""))
+            if containsKeyword(label, keywords) then
+                pcall(function()
+                    for _, signal in ipairs({
+                        gui.MouseButton1Click,
+                        gui.MouseButton1Down,
+                        gui.Activated
+                    }) do
+                        if signal then
+                            for _, conn in ipairs(getconnections(signal)) do
+                                conn:Fire()
+                            end
+                        end
+                    end
+                end)
+            end
+        end
+    end
+end
+
+local function autoDeskCheckInStep()
+    if not canAct() then
+        return
+    end
+
+    -- 1) Click desk UI buttons (photo / shutter / camera / admit)
+    clickGuiButtons(deskKeywords)
+
+    -- 2) Trigger only nearby desk prompts (no map-wide spam)
+    local deskPrompts = getNearbyPrompts(cfg.deskRange, deskKeywords)
+    for i = 1, math.min(3, #deskPrompts) do
+        if firePrompt(deskPrompts[i].prompt) then
+            markAction()
+            break
+        end
+    end
+end
+
+local function autoCoffeeStep()
+    if not canAct() then
+        return
+    end
+
+    local prompts = getNearbyPrompts(cfg.interactRange, coffeeKeywords)
+    for _, item in ipairs(prompts) do
+        if firePrompt(item.prompt) then
+            markAction()
+            break
+        end
+    end
+end
+
+local function autoBuyHealItemsStep()
+    if os.clock() - state.lastBuyTick < cfg.buyCooldown then
+        return
+    end
+
+    local prompts = getNearbyPrompts(cfg.interactRange, buyKeywords)
+    for _, item in ipairs(prompts) do
+        if firePrompt(item.prompt) then
+            state.lastBuyTick = os.clock()
+            break
+        end
+    end
+end
+
+local function autoConsumeHealStep()
+    local hum = getHumanoid()
+    if not hum then
+        return
+    end
+
+    local function tryUseTool(tool)
+        if tool:IsA("Tool") and containsKeyword(tool.Name, useHealKeywords) then
+            pcall(function()
+                hum:EquipTool(tool)
+                tool:Activate()
+            end)
+            return true
+        end
+        return false
+    end
+
+    local char = LP.Character
+    if char then
+        for _, tool in ipairs(char:GetChildren()) do
+            if tryUseTool(tool) then
+                return
+            end
+        end
+    end
+
+    for _, tool in ipairs(LP.Backpack:GetChildren()) do
+        if tryUseTool(tool) then
+            return
+        end
+    end
+end
+
+local function hasActiveEmergency()
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BoolValue") and obj.Value == true and containsKeyword(obj.Name, emergencyKeywords) then
+            return true
+        end
+        if obj:IsA("Model") and containsKeyword(obj.Name, emergencyKeywords) then
+            local p = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+            if p and distanceTo(p) <= cfg.emergencyRange then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function autoEmergencyStep()
+    if not hasActiveEmergency() or not canAct() then
+        return
+    end
+
+    local prompts = getNearbyPrompts(cfg.emergencyRange, emergencyKeywords)
+    for _, item in ipairs(prompts) do
+        if firePrompt(item.prompt) then
+            markAction()
+            break
+        end
+    end
+end
+
+local function applyLowGfxStep()
+    if state.gfxApplied and state.gfxIndex > #workspace:GetDescendants() then
+        return
+    end
+
+    if not state.gfxApplied then
+        state.gfxApplied = true
+        pcall(function()
+            Lighting.GlobalShadows = false
+            Lighting.FogEnd = 1e10
+            Lighting.Brightness = 1.8
+            Lighting.EnvironmentDiffuseScale = 0
+            Lighting.EnvironmentSpecularScale = 0
+        end)
+    end
+
+    local descendants = workspace:GetDescendants()
+    local finish = math.min(#descendants, state.gfxIndex + cfg.lowGfxBatch - 1)
+
+    for i = state.gfxIndex, finish do
+        local obj = descendants[i]
+        if obj:IsA("Decal") or obj:IsA("Texture") then
+            pcall(function()
+                obj.Texture = ""
+                obj.Transparency = 1
+            end)
+        elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam") or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
+            pcall(function()
+                obj.Enabled = false
+            end)
+        elseif obj:IsA("BasePart") then
+            pcall(function()
+                obj.Material = Enum.Material.SmoothPlastic
+                obj.Reflectance = 0
+            end)
+        elseif obj:IsA("SurfaceAppearance") then
+            pcall(function()
+                obj:Destroy()
+            end)
+        end
+    end
+
+    state.gfxIndex = finish + 1
 end
 
 local function setMovementBoost(on)
@@ -93,370 +391,24 @@ local function antiAfk()
     table.insert(state.runtimeConns, c)
 end
 
-local function tryPrompt(prompt)
-    if not prompt or not prompt:IsA("ProximityPrompt") then
-        return
-    end
-    if not prompt.Enabled then
-        return
-    end
-    local parent = prompt.Parent
-    if parent and parent:IsA("BasePart") and distanceTo(parent) <= cfg.interactRange then
-        pcall(function()
-            fireproximityprompt(prompt)
-        end)
-    end
-end
+local function mainLoopStep()
+    -- Desk check-in is highest priority so it won't get stuck at reception.
+    autoDeskCheckInStep()
 
-local function tryClick(cd)
-    if not cd or not cd:IsA("ClickDetector") then
-        return
-    end
-    local p = cd.Parent
-    if p and p:IsA("BasePart") and distanceTo(p) <= cfg.interactRange then
-        pcall(function()
-            fireclickdetector(cd)
-        end)
-    end
-end
-
-local collectKeywords = {
-    "coin", "cash", "reward", "money", "drop", "gift", "box", "crate"
-}
-
-local remoteKeywords = {
-    "heal", "treat", "patient", "pet", "clean", "feed", "collect", "claim", "job", "work",
-    "fire", "extinguish", "revive", "carry", "rescue", "coffee", "sanity", "candle", "ritual"
-}
-
-local coffeeKeywords = {
-    "coffee", "cafe", "latte", "espresso", "cup", "drink", "machine"
-}
-
-local buyKeywords = {
-    "buy", "shop", "purchase", "store", "vendor", "item", "tool", "med", "medicine", "bandage", "kit", "potion"
-}
-
-local useHealKeywords = {
-    "med", "medicine", "bandage", "heal", "firstaid", "first_aid", "potion", "pill", "syringe", "treatment"
-}
-
-local emergencyKeywords = {
-    "fire", "burn", "extinguish", "faint", "unconscious", "revive", "rescue", "critical", "cp", "cpr", "urgent",
-    "carry", "ritual", "candle", "monster", "bed", "syrup"
-}
-
-local ritualKeywords = {
-    "ritual", "candle", "eyedrop", "iv", "drop", "coffee", "tase", "defuse"
-}
-
-local fireResponseKeywords = {
-    "fire", "burn", "extinguish", "extinguisher", "ointment"
-}
-
-local faintResponseKeywords = {
-    "faint", "unconscious", "carry", "pickup", "drop", "bed", "revive"
-}
-
-local syrupKeywords = {
-    "maple", "syrup", "bedmonster", "monster"
-}
-
-local function containsKeyword(name, keywords)
-    name = string.lower(name or "")
-    for _, k in ipairs(keywords) do
-        if string.find(name, k, 1, true) then
-            return true
-        end
-    end
-    return false
-end
-
-local function autoInteractStep()
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("ProximityPrompt") then
-            tryPrompt(obj)
-        elseif obj:IsA("ClickDetector") then
-            tryClick(obj)
-        end
-    end
-end
-
-local function autoCollectStep()
-    local root = getRoot()
-    if not root then
-        return
+    if hasActiveEmergency() then
+        autoEmergencyStep()
     end
 
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("BasePart") and containsKeyword(obj.Name, collectKeywords) then
-            local d = distanceTo(obj)
-            if d <= cfg.collectRange then
-                pcall(function()
-                    firetouchinterest(root, obj, 0)
-                    firetouchinterest(root, obj, 1)
-                end)
-            end
-        end
-    end
-end
-
-local function autoRemoteStep()
-    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
-        if obj:IsA("RemoteEvent") and containsKeyword(obj.Name, remoteKeywords) then
-            pcall(function()
-                obj:FireServer()
-            end)
-        elseif obj:IsA("RemoteFunction") and containsKeyword(obj.Name, remoteKeywords) then
-            pcall(function()
-                obj:InvokeServer()
-            end)
-        end
-    end
-end
-
-local function canAct()
-    return os.clock() - state.lastActionTick >= cfg.actionCooldown
-end
-
-local function markAction()
-    state.lastActionTick = os.clock()
-end
-
-local function canBuy()
-    return os.clock() - state.lastBuyTick >= cfg.buyCooldown
-end
-
-local function markBuy()
-    state.lastBuyTick = os.clock()
-end
-
-local function isEmergencyObject(obj)
-    local name = string.lower(obj.Name or "")
-    if containsKeyword(name, emergencyKeywords) then
-        return true
-    end
-
-    for _, desc in ipairs(obj:GetDescendants()) do
-        if desc:IsA("BoolValue") then
-            local n = string.lower(desc.Name)
-            if containsKeyword(n, emergencyKeywords) and desc.Value == true then
-                return true
-            end
-        end
-    end
-
-    return false
-end
-
-local function nearestEmergencyTarget()
-    local root = getRoot()
-    if not root then
-        return nil
-    end
-
-    local best, bestDist
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and (containsKeyword(obj.Name, {"patient", "pet"}) or isEmergencyObject(obj)) then
-            local p = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-            if p then
-                local d = (root.Position - p.Position).Magnitude
-                if d <= cfg.emergencyRange and (not bestDist or d < bestDist) and isEmergencyObject(obj) then
-                    best = obj
-                    bestDist = d
-                end
-            end
-        end
-    end
-    return best
-end
-
-local function getTargetPart(target)
-    if not target then
-        return nil
-    end
-    if target:IsA("BasePart") then
-        return target
-    end
-    if target:IsA("Model") then
-        return target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart")
-    end
-    return nil
-end
-
-local function moveNear(part)
-    local root = getRoot()
-    if not root or not part then
-        return
-    end
-    local d = (root.Position - part.Position).Magnitude
-    if d > cfg.interactRange then
-        root.CFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
-    end
-end
-
-local function triggerPromptByKeywords(container, keywords)
-    for _, obj in ipairs(container:GetDescendants()) do
-        if obj:IsA("ProximityPrompt") and containsKeyword(obj.Name, keywords) then
-            local parentPart = getTargetPart(obj.Parent)
-            if parentPart then
-                moveNear(parentPart)
-            end
-            if canAct() then
-                tryPrompt(obj)
-                markAction()
-            end
-        end
-    end
-end
-
-local function triggerRemoteByKeywords(keywords)
-    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
-        if containsKeyword(obj.Name, keywords) then
-            if obj:IsA("RemoteEvent") then
-                pcall(function()
-                    obj:FireServer()
-                end)
-            elseif obj:IsA("RemoteFunction") then
-                pcall(function()
-                    obj:InvokeServer()
-                end)
-            end
-        end
-    end
-end
-
-local function autoCoffeeStep()
-    triggerPromptByKeywords(workspace, coffeeKeywords)
-    triggerRemoteByKeywords(coffeeKeywords)
-end
-
-local function autoBuyHealItemsStep()
-    if not canBuy() then
-        return
-    end
-
-    triggerPromptByKeywords(workspace, buyKeywords)
-    triggerRemoteByKeywords(buyKeywords)
-    triggerRemoteByKeywords(useHealKeywords)
-    markBuy()
-end
-
-local function autoConsumeHealStep()
-    local char = LP.Character
-    if not char then
-        return
-    end
-
-    local hum = getHumanoid(char)
-    if hum and hum.Health < hum.MaxHealth then
-        for _, tool in ipairs(char:GetChildren()) do
-            if tool:IsA("Tool") and containsKeyword(tool.Name, useHealKeywords) then
-                pcall(function()
-                    hum:EquipTool(tool)
-                end)
-                pcall(function()
-                    tool:Activate()
-                end)
-            end
-        end
-
-        for _, tool in ipairs(LP.Backpack:GetChildren()) do
-            if tool:IsA("Tool") and containsKeyword(tool.Name, useHealKeywords) then
-                pcall(function()
-                    hum:EquipTool(tool)
-                end)
-                pcall(function()
-                    tool:Activate()
-                end)
-            end
-        end
-    end
-end
-
-local function autoEmergencyStep()
-    local target = nearestEmergencyTarget()
-    if not target then
-        -- Even if no explicit target is detected, still handle global emergencies.
-        triggerPromptByKeywords(workspace, ritualKeywords)
-        triggerPromptByKeywords(workspace, fireResponseKeywords)
-        triggerPromptByKeywords(workspace, faintResponseKeywords)
-        triggerPromptByKeywords(workspace, syrupKeywords)
-        triggerRemoteByKeywords(ritualKeywords)
-        triggerRemoteByKeywords(fireResponseKeywords)
-        triggerRemoteByKeywords(faintResponseKeywords)
-        triggerRemoteByKeywords(syrupKeywords)
-        return
-    end
-
-    local p = getTargetPart(target)
-    if p then
-        moveNear(p)
-    end
-
-    triggerPromptByKeywords(target, emergencyKeywords)
-    triggerPromptByKeywords(target, fireResponseKeywords)
-    triggerPromptByKeywords(target, faintResponseKeywords)
-    triggerPromptByKeywords(target, ritualKeywords)
-    triggerRemoteByKeywords(emergencyKeywords)
-    triggerRemoteByKeywords(fireResponseKeywords)
-    triggerRemoteByKeywords(faintResponseKeywords)
-    triggerRemoteByKeywords(ritualKeywords)
-end
-
-local function applyLowGfx()
-    if state.gfxApplied then
-        return
-    end
-    state.gfxApplied = true
-
-    pcall(function()
-        Lighting.GlobalShadows = false
-        Lighting.FogEnd = 1e10
-        Lighting.Brightness = 1.8
-        Lighting.EnvironmentDiffuseScale = 0
-        Lighting.EnvironmentSpecularScale = 0
-    end)
-
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Decal") or obj:IsA("Texture") then
-            pcall(function()
-                obj.Texture = ""
-                obj.Transparency = 1
-            end)
-        elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam") or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
-            pcall(function()
-                obj.Enabled = false
-            end)
-        elseif obj:IsA("BasePart") then
-            pcall(function()
-                obj.Material = Enum.Material.SmoothPlastic
-                obj.Reflectance = 0
-            end)
-        elseif obj:IsA("SurfaceAppearance") then
-            pcall(function()
-                obj:Destroy()
-            end)
-        end
-    end
-end
-
-local function autoPriorityStep()
-    -- High-night priority:
-    -- 1) Emergency (fire/faint/ritual) -> 2) maintain sanity (coffee/heal) -> 3) buy supplies.
-    autoEmergencyStep()
     autoConsumeHealStep()
     autoCoffeeStep()
     autoBuyHealItemsStep()
+    applyLowGfxStep()
 end
 
 local function spawnLoop(fn)
     task.spawn(function()
         while state.enabled do
-            local ok = pcall(fn)
-            if not ok then
-                -- Keep loops alive even if one action errors.
-            end
+            pcall(fn)
             task.wait(cfg.loopDelay)
         end
     end)
@@ -539,13 +491,9 @@ local function setEnabled(on)
 
     if on then
         antiAfk()
-        applyLowGfx()
         setMovementBoost(true)
-        spawnLoop(autoInteractStep)
-        spawnLoop(autoCollectStep)
-        spawnLoop(autoRemoteStep)
-        spawnLoop(autoPriorityStep)
-        notify("All features enabled")
+        spawnLoop(mainLoopStep)
+        notify("Desk-safe mode enabled")
     else
         setMovementBoost(false)
         clearConnections()
