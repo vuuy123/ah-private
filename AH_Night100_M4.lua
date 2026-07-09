@@ -57,6 +57,14 @@ local roomType = "none"
 local roomAt = 0
 local heartBusy = false
 
+local shiftNum = 0
+local sanityPct = 100
+local lastHudRead = 0
+local lastRemoteScan = 0
+local lastAfkPulse = 0
+local lastSanityAct = 0
+local sessionStart = os.clock()
+
 local cfg = {
     loopDelay = 0.12,
     cacheRefresh = 1.8,
@@ -71,6 +79,15 @@ local cfg = {
     xrayClickGap = 0.42,
     heartClickGap = 0.14,
     autoStart = true,
+    shiftGoal = 100,
+    sanityCoffeeBelow = 58,
+    sanityEmergencyBelow = 34,
+    sanityProactiveBelow = 78,
+    sanityCoffeeCooldown = 8,
+    afkPulseSec = 50,
+    remoteRescanSec = 40,
+    stuckResetSec = 26,
+    walkSanityBelow = 36,
 }
 
 local lastRemote = {}
@@ -92,9 +109,16 @@ local promptDesk = {
     "ca lam", "ca làm", "thu ky", "thư ký", "tiep", "tiếp",
 }
 
-local promptCoffee = { "coffee", "cafe", "chocolate", "drink", "brew", "ca phe", "cà phê", "machine", "nuoc", "nước" }
+local promptCoffee = { "coffee", "cafe", "chocolate", "drink", "brew", "ca phe", "cà phê", "machine", "nuoc", "nước", "sip", "uong", "uống", "cup" }
+local promptChocolate = { "chocolate", "socola", "candy", "snack", "food", "keo", "kẹo", "an", "ăn" }
+local promptSanity = { "coffee", "cafe", "chocolate", "sanity", "mental", "drink", "ca phe", "cà phê", "socola", "energy", "stamina", "tam than", "tâm thần" }
 local promptHeal = { "med", "medicine", "bandage", "heal", "potion", "pill", "ointment", "thuoc", "thuốc", "hoi", "hồi", "chua", "chữa", "bang", "băng", "eat", "use", "drink" }
-local promptBuy = { "buy", "shop", "purchase", "store", "vendor", "mua", "cua hang", "cửa hàng" }
+local promptBuy = { "buy", "shop", "purchase", "store", "vendor", "mua", "cua hang", "cửa hàng", "stock", "restock", "nhap", "nhập" }
+local promptShift = {
+    "shift", "start", "continue", "next", "work", "begin", "ready",
+    "bat dau", "bắt đầu", "tiep tuc", "tiếp tục", "lam viec", "làm việc",
+    "ca moi", "ca mới", "ca lam", "ca làm", "vao ca", "vào ca",
+}
 local promptEmergency = { "fire", "burn", "extinguish", "faint", "unconscious", "revive", "carry", "rescue", "ritual", "candle", "extinguisher", "bed", "syrup", "maple", "lua", "lửa", "chay", "cháy", "ngat", "ngất", "cuu", "cứu" }
 
 local promptXray = {
@@ -159,6 +183,185 @@ end
 
 local function setStatus(t)
     statusText = t
+end
+
+local function parsePercent(text)
+    local n = string.match(lower(text), "(%d+)%%")
+    if n then
+        local v = tonumber(n)
+        if v and v >= 0 and v <= 100 then return v end
+    end
+    return nil
+end
+
+local function parseShift(text)
+    local t = lower(text)
+    local n = string.match(t, "ca%s*lam%s*viec%s*(%d+)")
+        or string.match(t, "ca làm việc%s*(%d+)")
+        or string.match(t, "shift%s*(%d+)")
+        or string.match(t, "ca%s*(%d+)")
+    if n then return tonumber(n) end
+    return nil
+end
+
+local function readHudStats()
+    if os.clock() - lastHudRead < 0.7 then return end
+    lastHudRead = os.clock()
+    local pg = LP:FindFirstChild("PlayerGui")
+    if not pg then return end
+    for _, obj in ipairs(pg:GetDescendants()) do
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+            local t = obj.Text or ""
+            local s = parseShift(t)
+            if s and s > 0 then shiftNum = s end
+            local p = parsePercent(t)
+            if p then sanityPct = p end
+        end
+    end
+end
+
+local function statusLine(extra)
+    local hrs = math.floor((os.clock() - sessionStart) / 3600)
+    local mins = math.floor((os.clock() - sessionStart) % 3600 / 60)
+    local goal = cfg.shiftGoal
+    local ca = shiftNum > 0 and ("Ca:" .. shiftNum .. "/" .. goal) or "Ca:?"
+    local sk = "SK:" .. math.floor(sanityPct) .. "%"
+    local time = string.format("%dh%02dm", hrs, mins)
+    return ca .. " " .. sk .. " " .. time .. (extra and (" | " .. extra) or "")
+end
+
+local function moveTowardPrompt(words, maxDist)
+    refreshPromptCache()
+    local best
+    for _, item in ipairs(promptCache) do
+        if item.dist <= maxDist and item.dist > 2.5 and item.prompt.Parent then
+            if not words or hasAny(item.label, words) then
+                if not best or item.dist < best.dist then best = item end
+            end
+        end
+    end
+    if not best then return false end
+    local h = hum()
+    if h then pcall(function() h:MoveTo(best.part.Position) end) end
+    return true
+end
+
+local function consumeSanityTools()
+    if os.clock() - lastSanityAct < cfg.sanityCoffeeCooldown then return false end
+    local need = sanityPct < cfg.sanityCoffeeBelow
+        or (sanityPct < cfg.sanityProactiveBelow and os.clock() - lastSanityAct > cfg.sanityCoffeeCooldown * 2)
+    if not need then return false end
+
+    local h = hum()
+    if not h then return false end
+    local pools = {}
+    local char = LP.Character
+    if char then
+        for _, t in ipairs(char:GetChildren()) do table.insert(pools, t) end
+    end
+    for _, t in ipairs(LP.Backpack:GetChildren()) do table.insert(pools, t) end
+
+    for _, t in ipairs(pools) do
+        if t:IsA("Tool") and hasAny(t.Name, promptSanity) then
+            pcall(function()
+                h:EquipTool(t)
+                t:Activate()
+            end)
+            lastSanityAct = os.clock()
+            lastAct = os.clock()
+            return true
+        end
+    end
+    return false
+end
+
+local function sanityMaintainStep()
+    readHudStats()
+    if sanityPct >= cfg.sanityCoffeeBelow and sanityPct >= cfg.sanityProactiveBelow then
+        return false
+    end
+
+    if consumeSanityTools() then return true end
+
+    if clickGuiByWords(promptSanity) then
+        lastSanityAct = os.clock()
+        return true
+    end
+
+    local p = nearestPrompt(28, promptCoffee)
+    if p and firePrompt(p) then
+        lastSanityAct = os.clock()
+        return true
+    end
+
+    if sanityPct < cfg.sanityEmergencyBelow then
+        p = nearestPrompt(28, promptChocolate)
+        if p and firePrompt(p) then
+            lastSanityAct = os.clock()
+            return true
+        end
+        if tryRemotes({ "coffee", "sanity", "chocolate", "drink", "restore", "mental" }) then
+            lastSanityAct = os.clock()
+            return true
+        end
+    end
+
+    if sanityPct < cfg.walkSanityBelow then
+        if moveTowardPrompt(promptCoffee, 80) then return true end
+        if moveTowardPrompt(promptChocolate, 80) then return true end
+    end
+
+    return false
+end
+
+local function buySuppliesStep()
+    if sanityPct > cfg.sanityProactiveBelow then return false end
+    if clickGuiByWords(promptBuy) then return true end
+    local p = nearestPrompt(22, promptBuy)
+    if p and firePrompt(p) then return true end
+    p = nearestPrompt(18, promptCoffee)
+    if p and firePrompt(p) then return true end
+    p = nearestPrompt(18, promptChocolate)
+    if p and firePrompt(p) then return true end
+    return false
+end
+
+local function shiftContinueStep()
+    if clickGuiByWords(promptShift) then return true end
+    local p = nearestPrompt(22, promptShift)
+    if p and firePrompt(p) then return true end
+    if tryRemotes({ "shift", "start", "continue", "next", "work", "job" }) then return true end
+    return false
+end
+
+local function antiAfkPulse()
+    if os.clock() - lastAfkPulse < cfg.afkPulseSec then return end
+    lastAfkPulse = os.clock()
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new(0, 0))
+    end)
+    pcall(function()
+        VIM:SendKeyEvent(true, Enum.KeyCode.W, false, game)
+        task.wait(0.04)
+        VIM:SendKeyEvent(false, Enum.KeyCode.W, false, game)
+    end)
+    pcall(function()
+        VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+        task.wait(0.03)
+        VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+    end)
+end
+
+local function stuckRecover()
+    if os.clock() - lastAct < cfg.stuckResetSec then return false end
+    deskStep = 1
+    scanRemotes()
+    if fireNearestAny(24) then return true end
+    if shiftContinueStep() then return true end
+    if deskGuiCycle() then return true end
+    if tryRemotes({ "shift", "start", "patient", "check", "admit", "desk" }) then return true end
+    return false
 end
 
 local function root()
@@ -962,15 +1165,35 @@ end
 local function mainStep()
     if os.clock() - lastAct < cfg.actionCooldown then return end
 
+    readHudStats()
     refreshPromptCache()
     local room = detectRoom()
-    setStatus(string.format("%s P:%d R:%d", room, #promptCache, #remotes))
+
+    -- Emergency first (shift 10+ monster waves)
+    local p = nearestPrompt(cfg.emergencyRange, promptEmergency)
+    if p and firePrompt(p) then
+        lastAct = os.clock()
+        setStatus(statusLine("KHAN CAP"))
+        return
+    end
+
+    if sanityMaintainStep() then
+        lastAct = os.clock()
+        setStatus(statusLine("Coffee/SK"))
+        return
+    end
+
+    if stuckRecover() then
+        lastAct = os.clock()
+        setStatus(statusLine("Mo ket"))
+        return
+    end
 
     if room ~= "none" then
         local ok, tag = treatmentRoomStep()
         if ok then
             lastAct = os.clock()
-            setStatus(tag or room)
+            setStatus(statusLine(tag or room))
             return
         end
     end
@@ -978,38 +1201,35 @@ local function mainStep()
     -- Desk: GUI buttons (photo/camera/admit/shutter)
     if deskGuiCycle() then
         lastAct = os.clock()
-        setStatus("desk GUI")
+        setStatus(statusLine("Le tan"))
         return
     end
 
-    -- Desk: nearest prompt (keyword OR any within 10 studs)
-    local p = nearestPrompt(cfg.deskRange, promptDesk)
+    p = nearestPrompt(cfg.deskRange, promptDesk)
     if not p then
         p = nearestPrompt(cfg.nearRange, nil)
     end
     if p and firePrompt(p) then
         lastAct = os.clock()
-        setStatus("desk prompt")
+        setStatus(statusLine("Desk"))
+        return
+    end
+
+    if shiftContinueStep() then
+        lastAct = os.clock()
+        setStatus(statusLine("Vao ca"))
         return
     end
 
     if tryRemotes(remoteWords) then
         lastAct = os.clock()
-        setStatus("remote")
+        setStatus(statusLine("Remote"))
         return
     end
 
     if tryClickDetectors(cfg.interactRange) then
         lastAct = os.clock()
-        setStatus("click")
-        return
-    end
-
-    -- Emergency
-    p = nearestPrompt(cfg.emergencyRange, promptEmergency)
-    if p and firePrompt(p) then
-        lastAct = os.clock()
-        setStatus("emergency")
+        setStatus(statusLine("Click"))
         return
     end
 
@@ -1017,32 +1237,41 @@ local function mainStep()
 
     if isInTreatmentRoom() and treatPatientStep() then
         lastAct = os.clock()
-        setStatus("Thuoc")
+        setStatus(statusLine("Thuoc"))
+        return
+    end
+
+    if buySuppliesStep() then
+        lastAct = os.clock()
+        setStatus(statusLine("Mua do"))
         return
     end
 
     p = nearestPrompt(cfg.interactRange, promptCoffee)
     if p and firePrompt(p) then
         lastAct = os.clock()
-        setStatus("coffee")
+        setStatus(statusLine("Coffee"))
         return
     end
 
     p = nearestPrompt(cfg.interactRange, promptBuy)
     if p and firePrompt(p) then
         lastAct = os.clock()
-        setStatus("buy")
+        setStatus(statusLine("Shop"))
+    else
+        setStatus(statusLine(room))
     end
 end
 
 local function start()
     scanRemotes()
+    lastRemoteScan = os.clock()
+    sessionStart = os.clock()
     hookInstantPrompts()
     table.insert(conns, LP.Idled:Connect(function()
         pcall(function()
-            VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-            task.wait(0.15)
-            VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new(0, 0))
         end)
     end))
     setBoost(true)
@@ -1053,7 +1282,20 @@ local function start()
             task.wait(cfg.loopDelay)
         end
     end)
-    log("ON | firePrompt:" .. tostring(hasFirePrompt) .. " remotes:" .. #remotes)
+    task.spawn(function()
+        while ON do
+            pcall(function()
+                antiAfkPulse()
+                readHudStats()
+                if os.clock() - lastRemoteScan >= cfg.remoteRescanSec then
+                    lastRemoteScan = os.clock()
+                    scanRemotes()
+                end
+            end)
+            task.wait(5)
+        end
+    end)
+    log("ON treo ca " .. cfg.shiftGoal .. " | SK auto | anti-AFK")
 end
 
 local function stop()
@@ -1202,7 +1444,7 @@ note.TextColor3 = Color3.fromRGB(140, 140, 150)
 note.Font = Enum.Font.Gotham
 note.TextSize = 10
 note.TextWrapped = true
-note.Text = "Auto tat ca phong: 1-5 DNA | 6 XQuang | 7 Tim | 8 Mo"
+note.Text = "Treo ca 100 | auto sanity + coffee + tat ca phong"
 note.ZIndex = 10002
 note.Parent = panel
 
@@ -1232,7 +1474,7 @@ Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
 task.spawn(function()
     while gui.Parent do
-        sub.Text = statusText .. "\n" .. BRAND_SUB .. "\nF6 = bật/tắt nhanh"
+        sub.Text = statusText .. "\n" .. BRAND_SUB .. "\nF6 ON/OFF | ESC menu"
         task.wait(0.25)
     end
 end)
@@ -1279,8 +1521,8 @@ LP.CharacterAdded:Connect(function()
 end)
 
 scanRemotes()
-setStatus(BRAND .. " | R:" .. #remotes)
-log(BRAND .. " loaded | F6 bat/tat | ESC menu")
+setStatus(statusLine("Ready"))
+log(BRAND .. " | treo ca " .. cfg.shiftGoal)
 
 if cfg.autoStart then
     task.defer(function()
