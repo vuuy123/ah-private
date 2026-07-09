@@ -3,12 +3,16 @@
 local BRAND = "Vuuy Private"
 local BRAND_SUB = "by vuuy · ah-private"
 local GUI_NAME = "VuuyPrivate_UI"
+local GUI_HUD = "VuuyPrivate_HUD"
+local GUI_MENU = "VuuyPrivate_MENU"
 
 local G = (typeof(getgenv) == "function" and getgenv()) or _G
 pcall(function()
     local pg = game:GetService("Players").LocalPlayer.PlayerGui
     for _, child in ipairs(pg:GetChildren()) do
-        if child:IsA("ScreenGui") and (child.Name == GUI_NAME or child.Name == "AH_Night100_UI") then
+        if child:IsA("ScreenGui") and (
+            child.Name == GUI_NAME or child.Name == GUI_HUD or child.Name == GUI_MENU or child.Name == "AH_Night100_UI"
+        ) then
             child:Destroy()
         end
     end
@@ -596,14 +600,23 @@ local function tryClickDetectors(maxRange)
     return false
 end
 
+local function isOurGuiElement(g)
+    local pg = LP:FindFirstChild("PlayerGui")
+    if not pg or not g then return false end
+    for _, n in ipairs({ GUI_NAME, GUI_HUD, GUI_MENU }) do
+        local our = pg:FindFirstChild(n)
+        if our and g:IsDescendantOf(our) then return true end
+    end
+    return false
+end
+
 local function clickGuiByWords(words)
     local pg = LP:FindFirstChild("PlayerGui")
     if not pg then return false end
     local clicked = false
-    local ourGui = pg:FindFirstChild(GUI_NAME)
     for _, g in ipairs(pg:GetDescendants()) do
         if (g:IsA("TextButton") or g:IsA("ImageButton")) and isGuiShown(g) then
-            if not (ourGui and g:IsDescendantOf(ourGui)) then
+            if not isOurGuiElement(g) then
                 if hasAny(guiLabel(g), words) then
                     fireSignal(g.MouseButton1Click)
                     fireSignal(g.Activated)
@@ -770,7 +783,6 @@ end
 local function clickGameGui(words, skipSkull)
     local pg = LP:FindFirstChild("PlayerGui")
     if not pg then return false end
-    local ourGui = pg:FindFirstChild(GUI_NAME)
     local best, bestScore = nil, 0
     local pools = { pg:GetDescendants() }
     for _, g in ipairs(workspace:GetDescendants()) do
@@ -784,7 +796,7 @@ local function clickGameGui(words, skipSkull)
     end
     for _, g in ipairs(pools[1]) do
         if (g:IsA("TextButton") or g:IsA("ImageButton")) and isGuiShown(g) then
-            if not (ourGui and g:IsDescendantOf(ourGui)) and not (skipSkull and isSkullTarget(g)) then
+            if not isOurGuiElement(g) and not (skipSkull and isSkullTarget(g)) then
                 local label = guiLabel(g)
                 local score = g.ZIndex
                 if words and hasAny(label, words) then score = score + 120 end
@@ -856,11 +868,10 @@ end
 local function heartClickTargets()
     if heartBusy then return true end
     local pg = LP:FindFirstChild("PlayerGui")
-    local ourGui = pg and pg:FindFirstChild(GUI_NAME)
     local targets = {}
     if pg then
         for _, g in ipairs(pg:GetDescendants()) do
-            if isWhiteHeartTarget(g) and not (ourGui and g:IsDescendantOf(ourGui)) then
+            if isWhiteHeartTarget(g) and not isOurGuiElement(g) then
                 table.insert(targets, g)
             end
         end
@@ -1305,47 +1316,67 @@ local function stop()
     setStatus("off")
 end
 
--- UI (ESC / RightControl opens menu + frees mouse for T1)
+-- UI: HUD bottom-left | ESC opens centered menu on top layer
 local pg = LP:WaitForChild("PlayerGui")
 local MENU_ACTION = "VuuyPrivate_MenuEsc"
+local MENU_TOP_ORDER = 2147483646
 
-local function getGuiParent()
+local function getMenuParent()
     if typeof(gethui) == "function" then
         local ok, hui = pcall(gethui)
         if ok and hui then return hui end
     end
+    if typeof(syn) == "table" and syn.protect_gui then
+        return game:GetService("CoreGui")
+    end
     return pg
 end
 
-local gui = Instance.new("ScreenGui")
-gui.Name = GUI_NAME
-gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
-gui.DisplayOrder = 999999
-gui.Parent = getGuiParent()
+local function protectGui(g)
+    pcall(function()
+        if typeof(syn) == "table" and syn.protect_gui then
+            syn.protect_gui(g)
+        end
+    end)
+end
+
+local hudGui = Instance.new("ScreenGui")
+hudGui.Name = GUI_HUD
+hudGui.ResetOnSpawn = false
+hudGui.IgnoreGuiInset = true
+hudGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+hudGui.DisplayOrder = 8
+hudGui.Parent = pg
+
+local menuGui = Instance.new("ScreenGui")
+menuGui.Name = GUI_MENU
+menuGui.ResetOnSpawn = false
+menuGui.IgnoreGuiInset = true
+menuGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+menuGui.DisplayOrder = MENU_TOP_ORDER
+menuGui.Enabled = false
+protectGui(menuGui)
+menuGui.Parent = getMenuParent()
 
 local menuOpen = false
 
-local function raiseGuiOnTop()
-    local parent = getGuiParent()
-    if gui.Parent ~= parent then
-        gui.Parent = parent
+local function raiseMenuOnTop()
+    local parent = getMenuParent()
+    if menuGui.Parent ~= parent then
+        menuGui.Parent = parent
     end
-    local top = 999999
-    for _, child in ipairs(pg:GetChildren()) do
-        if child:IsA("ScreenGui") and child ~= gui and child.DisplayOrder >= top then
-            top = child.DisplayOrder + 1
-        end
-    end
-    pcall(function()
-        for _, child in ipairs(parent:GetChildren()) do
-            if child:IsA("ScreenGui") and child ~= gui and child.DisplayOrder >= top then
-                top = child.DisplayOrder + 1
+    protectGui(menuGui)
+    local top = MENU_TOP_ORDER
+    for _, root in ipairs({ pg, parent }) do
+        pcall(function()
+            for _, child in ipairs(root:GetChildren()) do
+                if child:IsA("ScreenGui") and child ~= menuGui and child.DisplayOrder >= top then
+                    top = child.DisplayOrder + 1
+                end
             end
-        end
-    end)
-    gui.DisplayOrder = top
+        end)
+    end
+    menuGui.DisplayOrder = top
 end
 
 local function freeMouse()
@@ -1368,50 +1399,66 @@ end
 
 local function setMenuVisible(show)
     menuOpen = show
+    menuGui.Enabled = show
     if show then
-        raiseGuiOnTop()
+        raiseMenuOnTop()
         freeMouse()
+        task.spawn(function()
+            for _ = 1, 8 do
+                raiseMenuOnTop()
+                task.wait(0.04)
+            end
+        end)
     end
     overlay.Visible = show
     panel.Visible = show
-    hint.Visible = not show
 end
 
+-- HUD: bottom-left (tránh nút Roblox góc trên)
 local hint = Instance.new("TextLabel")
-hint.Size = UDim2.new(0, 220, 0, 28)
-hint.Position = UDim2.new(0, 12, 0, 12)
-hint.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-hint.BackgroundTransparency = 0.35
+hint.Size = UDim2.new(0, 250, 0, 52)
+hint.AnchorPoint = Vector2.new(0, 1)
+hint.Position = UDim2.new(0, 12, 1, -118)
+hint.BackgroundColor3 = Color3.fromRGB(12, 14, 20)
+hint.BackgroundTransparency = 0.2
 hint.TextColor3 = Color3.fromRGB(220, 220, 220)
 hint.Font = Enum.Font.Gotham
-hint.TextSize = 12
-hint.Text = BRAND .. " | ESC/RCtrl Menu | F6 ON/OFF"
-hint.ZIndex = 50
-hint.Parent = gui
-Instance.new("UICorner", hint).CornerRadius = UDim.new(0, 6)
+hint.TextSize = 11
+hint.TextWrapped = true
+hint.TextXAlignment = Enum.TextXAlignment.Left
+hint.TextYAlignment = Enum.TextYAlignment.Top
+hint.Text = BRAND .. "\nF6 ON/OFF | ESC menu"
+hint.Parent = hudGui
+Instance.new("UICorner", hint).CornerRadius = UDim.new(0, 8)
+Instance.new("UIPadding", hint).PaddingLeft = UDim.new(0, 8)
+Instance.new("UIPadding", hint).PaddingTop = UDim.new(0, 6)
 
 local overlay = Instance.new("TextButton")
 overlay.Name = "Overlay"
 overlay.Size = UDim2.new(1, 0, 1, 0)
 overlay.BackgroundColor3 = Color3.new(0, 0, 0)
-overlay.BackgroundTransparency = 0.45
+overlay.BackgroundTransparency = 0.35
 overlay.Text = ""
 overlay.AutoButtonColor = false
 overlay.Visible = false
-overlay.ZIndex = 10000
-overlay.Parent = gui
+overlay.ZIndex = 1
+overlay.Parent = menuGui
 
 local panel = Instance.new("Frame")
 panel.Name = "Panel"
-panel.Size = UDim2.new(0, 310, 0, 248)
-panel.Position = UDim2.new(0.5, -155, 0.5, -124)
-panel.BackgroundColor3 = Color3.fromRGB(22, 26, 38)
+panel.Size = UDim2.new(0, 330, 0, 270)
+panel.Position = UDim2.new(0.5, -165, 0.5, -135)
+panel.BackgroundColor3 = Color3.fromRGB(16, 20, 32)
 panel.BorderSizePixel = 0
 panel.Visible = false
-panel.ZIndex = 10001
+panel.ZIndex = 2
 panel.Active = true
-panel.Parent = gui
+panel.Parent = menuGui
 Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 12)
+local panelStroke = Instance.new("UIStroke", panel)
+panelStroke.Color = Color3.fromRGB(80, 150, 255)
+panelStroke.Thickness = 1.5
+panelStroke.Transparency = 0.35
 
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -20, 0, 36)
@@ -1420,61 +1467,63 @@ title.BackgroundTransparency = 1
 title.Text = BRAND
 title.TextColor3 = Color3.fromRGB(130, 200, 255)
 title.Font = Enum.Font.GothamBold
-title.TextSize = 18
-title.ZIndex = 10002
+title.TextSize = 20
+title.ZIndex = 3
 title.Parent = panel
 
 local sub = Instance.new("TextLabel")
-sub.Size = UDim2.new(1, -20, 0, 40)
-sub.Position = UDim2.new(0, 10, 0, 40)
+sub.Size = UDim2.new(1, -20, 0, 56)
+sub.Position = UDim2.new(0, 10, 0, 42)
 sub.BackgroundTransparency = 1
 sub.TextColor3 = Color3.fromRGB(170, 170, 170)
 sub.Font = Enum.Font.Gotham
 sub.TextSize = 11
 sub.TextWrapped = true
+sub.TextXAlignment = Enum.TextXAlignment.Left
 sub.Text = BRAND_SUB
-sub.ZIndex = 10002
+sub.ZIndex = 3
 sub.Parent = panel
 
 local note = Instance.new("TextLabel")
-note.Size = UDim2.new(1, -20, 0, 28)
-note.Position = UDim2.new(0, 10, 0, 72)
+note.Size = UDim2.new(1, -20, 0, 30)
+note.Position = UDim2.new(0, 10, 0, 98)
 note.BackgroundTransparency = 1
 note.TextColor3 = Color3.fromRGB(140, 140, 150)
 note.Font = Enum.Font.Gotham
 note.TextSize = 10
 note.TextWrapped = true
-note.Text = "Treo ca 100 | auto sanity + coffee + tat ca phong"
-note.ZIndex = 10002
+note.Text = "Treo ca 100 | ESC/RCtrl mo menu | F6 bat/tat"
+note.ZIndex = 3
 note.Parent = panel
 
 local btn = Instance.new("TextButton")
 btn.Size = UDim2.new(1, -40, 0, 52)
-btn.Position = UDim2.new(0, 20, 0, 108)
+btn.Position = UDim2.new(0, 20, 0, 136)
 btn.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
 btn.TextColor3 = Color3.new(1, 1, 1)
 btn.Font = Enum.Font.GothamBold
 btn.TextSize = 16
 btn.Text = "TẮT AUTO (OFF)"
-btn.ZIndex = 10002
+btn.ZIndex = 3
 btn.Parent = panel
 Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
 
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(1, -40, 0, 36)
-closeBtn.Position = UDim2.new(0, 20, 0, 192)
+closeBtn.Position = UDim2.new(0, 20, 0, 214)
 closeBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
 closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 closeBtn.Font = Enum.Font.Gotham
 closeBtn.TextSize = 14
 closeBtn.Text = "Đóng (ESC)"
-closeBtn.ZIndex = 10002
+closeBtn.ZIndex = 3
 closeBtn.Parent = panel
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
 task.spawn(function()
-    while gui.Parent do
-        sub.Text = statusText .. "\n" .. BRAND_SUB .. "\nF6 ON/OFF | ESC menu"
+    while hudGui.Parent do
+        hint.Text = statusText .. "\nF6 ON/OFF | ESC menu"
+        sub.Text = statusText .. "\n" .. BRAND_SUB
         task.wait(0.25)
     end
 end)
@@ -1500,20 +1549,10 @@ pcall(function()
         end
         setMenuVisible(not menuOpen)
         return Enum.ContextActionResult.Sink
-    end, false, 3000, Enum.KeyCode.Escape)
+    end, false, 4000, Enum.KeyCode.Escape)
 end)
 
-GuiService.MenuOpened:Connect(function()
-    task.defer(function()
-        setMenuVisible(true)
-        raiseGuiOnTop()
-        freeMouse()
-    end)
-end)
-
-GuiService.MenuClosed:Connect(function()
-    setMenuVisible(false)
-end)
+-- Không dùng GuiService.MenuClosed — nó tự tắt menu khi đóng menu Roblox
 
 LP.CharacterAdded:Connect(function()
     task.wait(1)
