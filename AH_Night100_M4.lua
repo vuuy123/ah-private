@@ -181,8 +181,13 @@ local remoteWords = {
 local function log(msg)
     print("[" .. BRAND .. "]", msg)
     pcall(function()
-        StarterGui:SetCore("SendNotification", { Title = BRAND, Text = tostring(msg), Duration = 2 })
+        StarterGui:SetCore("SendNotification", { Title = BRAND, Text = tostring(msg), Duration = 3 })
     end)
+end
+
+local function logErr(msg)
+    warn("[" .. BRAND .. "]", msg)
+    log("LOI: " .. tostring(msg))
 end
 
 local function setStatus(t)
@@ -1345,7 +1350,7 @@ hudGui.Name = GUI_HUD
 hudGui.ResetOnSpawn = false
 hudGui.IgnoreGuiInset = true
 hudGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-hudGui.DisplayOrder = 8
+hudGui.DisplayOrder = 120
 hudGui.Parent = pg
 
 local menuGui = Instance.new("ScreenGui")
@@ -1356,7 +1361,12 @@ menuGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 menuGui.DisplayOrder = MENU_TOP_ORDER
 menuGui.Enabled = false
 protectGui(menuGui)
-menuGui.Parent = getMenuParent()
+pcall(function()
+    menuGui.Parent = getMenuParent()
+end)
+if not menuGui.Parent then
+    menuGui.Parent = pg
+end
 
 local menuOpen = false
 
@@ -1387,14 +1397,34 @@ local function freeMouse()
 end
 
 local function refreshBtn()
-    btn.Text = ON and "BẬT AUTO (ON)" or "TẮT AUTO (OFF)"
-    btn.BackgroundColor3 = ON and Color3.fromRGB(34, 145, 65) or Color3.fromRGB(55, 55, 55)
+    local label = ON and "AUTO: DANG BAT (F6)" or ">>> BAT AUTO (F6) <<<"
+    local col = ON and Color3.fromRGB(34, 145, 65) or Color3.fromRGB(180, 60, 60)
+    if btn then
+        btn.Text = ON and "BẬT AUTO (ON)" or "TẮT AUTO (OFF)"
+        btn.BackgroundColor3 = ON and Color3.fromRGB(34, 145, 65) or Color3.fromRGB(55, 55, 55)
+    end
+    if hudBtn then
+        hudBtn.Text = label
+        hudBtn.BackgroundColor3 = col
+    end
+end
+
+local function setAuto(on)
+    if on == ON then
+        refreshBtn()
+        return
+    end
+    ON = on
+    refreshBtn()
+    if ON then
+        pcall(start)
+    else
+        pcall(stop)
+    end
 end
 
 local function toggleFarm()
-    ON = not ON
-    refreshBtn()
-    if ON then start() else stop() end
+    setAuto(not ON)
 end
 
 local function setMenuVisible(show)
@@ -1414,24 +1444,40 @@ local function setMenuVisible(show)
     panel.Visible = show
 end
 
--- HUD: bottom-left (tránh nút Roblox góc trên)
+-- HUD: bottom-left + nút bật luôn hiện (không cần ESC)
+local hudBox = Instance.new("Frame")
+hudBox.Size = UDim2.new(0, 260, 0, 88)
+hudBox.AnchorPoint = Vector2.new(0, 1)
+hudBox.Position = UDim2.new(0, 10, 1, -108)
+hudBox.BackgroundColor3 = Color3.fromRGB(10, 12, 18)
+hudBox.BackgroundTransparency = 0.15
+hudBox.BorderSizePixel = 0
+hudBox.Parent = hudGui
+Instance.new("UICorner", hudBox).CornerRadius = UDim.new(0, 8)
+
 local hint = Instance.new("TextLabel")
-hint.Size = UDim2.new(0, 250, 0, 52)
-hint.AnchorPoint = Vector2.new(0, 1)
-hint.Position = UDim2.new(0, 12, 1, -118)
-hint.BackgroundColor3 = Color3.fromRGB(12, 14, 20)
-hint.BackgroundTransparency = 0.2
+hint.Size = UDim2.new(1, -10, 0, 46)
+hint.Position = UDim2.new(0, 8, 0, 6)
+hint.BackgroundTransparency = 1
 hint.TextColor3 = Color3.fromRGB(220, 220, 220)
 hint.Font = Enum.Font.Gotham
 hint.TextSize = 11
 hint.TextWrapped = true
 hint.TextXAlignment = Enum.TextXAlignment.Left
 hint.TextYAlignment = Enum.TextYAlignment.Top
-hint.Text = BRAND .. "\nF6 ON/OFF | ESC menu"
-hint.Parent = hudGui
-Instance.new("UICorner", hint).CornerRadius = UDim.new(0, 8)
-Instance.new("UIPadding", hint).PaddingLeft = UDim.new(0, 8)
-Instance.new("UIPadding", hint).PaddingTop = UDim.new(0, 6)
+hint.Text = BRAND .. " | dang tai..."
+hint.Parent = hudBox
+
+local hudBtn = Instance.new("TextButton")
+hudBtn.Size = UDim2.new(1, -16, 0, 30)
+hudBtn.Position = UDim2.new(0, 8, 1, -36)
+hudBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+hudBtn.TextColor3 = Color3.new(1, 1, 1)
+hudBtn.Font = Enum.Font.GothamBold
+hudBtn.TextSize = 13
+hudBtn.Text = ">>> BAT AUTO (F6) <<<"
+hudBtn.Parent = hudBox
+Instance.new("UICorner", hudBtn).CornerRadius = UDim.new(0, 6)
 
 local overlay = Instance.new("TextButton")
 overlay.Name = "Overlay"
@@ -1522,13 +1568,17 @@ Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
 task.spawn(function()
     while hudGui.Parent do
-        hint.Text = statusText .. "\nF6 ON/OFF | ESC menu"
-        sub.Text = statusText .. "\n" .. BRAND_SUB
+        hint.Text = statusText .. "\nF6 / Insert = bat tat"
+        if sub then sub.Text = statusText .. "\n" .. BRAND_SUB end
         task.wait(0.25)
     end
 end)
 
 btn.MouseButton1Click:Connect(toggleFarm)
+hudBtn.MouseButton1Click:Connect(function()
+    freeMouse()
+    toggleFarm()
+end)
 closeBtn.MouseButton1Click:Connect(function() setMenuVisible(false) end)
 overlay.MouseButton1Click:Connect(function() setMenuVisible(false) end)
 
@@ -1536,9 +1586,31 @@ UIS.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.KeyCode == Enum.KeyCode.RightControl then
         setMenuVisible(not menuOpen)
-    elseif input.KeyCode == Enum.KeyCode.F6 then
+    elseif input.KeyCode == Enum.KeyCode.F6 or input.KeyCode == Enum.KeyCode.Insert then
         toggleFarm()
     end
+end)
+
+pcall(function()
+    CAS:UnbindAction("VuuyPrivate_F6")
+    CAS:BindActionAtPriority("VuuyPrivate_F6", function(_, state)
+        if state ~= Enum.UserInputState.Begin then
+            return Enum.ContextActionResult.Pass
+        end
+        toggleFarm()
+        return Enum.ContextActionResult.Sink
+    end, false, 4000, Enum.KeyCode.F6)
+end)
+
+pcall(function()
+    CAS:UnbindAction("VuuyPrivate_Ins")
+    CAS:BindActionAtPriority("VuuyPrivate_Ins", function(_, state)
+        if state ~= Enum.UserInputState.Begin then
+            return Enum.ContextActionResult.Pass
+        end
+        toggleFarm()
+        return Enum.ContextActionResult.Sink
+    end, false, 3999, Enum.KeyCode.Insert)
 end)
 
 pcall(function()
@@ -1561,14 +1633,12 @@ end)
 
 scanRemotes()
 setStatus(statusLine("Ready"))
-log(BRAND .. " | treo ca " .. cfg.shiftGoal)
+log(BRAND .. " loaded")
 
-if cfg.autoStart then
-    task.defer(function()
-        task.wait(0.6)
-        if not ON then
-            toggleFarm()
-            log("Auto ON")
-        end
+task.defer(function()
+    task.wait(0.5)
+    pcall(function()
+        setAuto(true)
+        log("DA BAT AUTO | F6 hoac nut do")
     end)
-end
+end)
