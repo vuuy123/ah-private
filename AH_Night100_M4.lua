@@ -1,14 +1,12 @@
--- AH Night100 Pro - Opiumware/Mac safe, desk auto like premium scripts
+-- AH Night100 v3 - instant prompt hook + desk auto (Opiumware/Mac)
 
 local G = (typeof(getgenv) == "function" and getgenv()) or _G
-if G.AH_NIGHT100_PRO then
-    pcall(function()
-        local pg = game:GetService("Players").LocalPlayer.PlayerGui
-        local old = pg:FindFirstChild("AH_Night100_UI")
-        if old then old:Destroy() end
-    end)
-end
-G.AH_NIGHT100_PRO = true
+pcall(function()
+    local pg = game:GetService("Players").LocalPlayer.PlayerGui
+    local old = pg:FindFirstChild("AH_Night100_UI")
+    if old then old:Destroy() end
+end)
+G.AH_NIGHT100_V3 = true
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -17,6 +15,7 @@ local VirtualUser = game:GetService("VirtualUser")
 local StarterGui = game:GetService("StarterGui")
 local Lighting = game:GetService("Lighting")
 local RS = game:GetService("ReplicatedStorage")
+local PPS = game:GetService("ProximityPromptService")
 
 local LP = Players.LocalPlayer
 if not LP then LP = Players.PlayerAdded:Wait() end
@@ -27,39 +26,54 @@ local hasGetConnections = typeof(getconnections) == "function"
 
 local ON = false
 local conns = {}
+local remotes = {}
 local promptCache = {}
 local lastCache = 0
 local lastAct = 0
 local deskStep = 1
 local gfxDone = false
+local statusText = "loaded"
 
 local cfg = {
-    loopDelay = 0.15,
-    cacheRefresh = 2.5,
-    actionCooldown = 0.28,
-    deskRange = 16,
-    interactRange = 12,
-    emergencyRange = 45,
+    loopDelay = 0.12,
+    cacheRefresh = 1.8,
+    actionCooldown = 0.22,
+    deskRange = 18,
+    nearRange = 10,
+    interactRange = 14,
+    emergencyRange = 50,
+    remoteCooldown = 1.8,
 }
 
-local deskGuiWords = {
-    { "photo", "chup", "chụp", "anh", "ảnh", "take" },
-    { "camera", "cctv", "cam", "monitor" },
-    { "admit", "accept", "register", "cho vao", "cho vào", "tiep nhan", "tiếp nhận", "stamp", "check" },
+local lastRemote = {}
+
+local deskGuiSteps = {
+    { "photo", "chup", "chụp", "picture", "snap", "take" },
+    { "camera", "cctv", "cam", "monitor", "screen" },
+    { "admit", "accept", "register", "stamp", "approve", "cho vao", "cho vào", "tiep nhan", "tiếp nhận", "check in", "checkin" },
+    { "shutter", "reject", "deny", "close", "tu choi", "từ chối", "dong", "đóng" },
 }
 
-local promptGroups = {
-    desk = {
-        "check", "greet", "photo", "camera", "cctv", "shutter", "admit", "register",
-        "inspect", "window", "patient", "form", "scan", "desk", "reception", "counter",
-        "kiem", "kiểm", "chup", "chụp", "anh", "ảnh", "tiep nhan", "tiếp nhận",
-        "quay", "le tan", "lễ tân", "mo cua", "mở cửa", "dong cua", "đóng cửa",
-        "man", "màn", "cho vao", "cho vào", "stamp", "take", "interact", "e"
-    },
-    coffee = { "coffee", "cafe", "chocolate", "drink", "brew", "ca phe", "cà phê", "nuoc", "nước", "machine" },
-    heal = { "med", "medicine", "bandage", "heal", "potion", "pill", "ointment", "chocolate", "thuoc", "thuốc", "hoi", "hồi", "chua", "chữa", "bang", "băng", "eat", "use", "drink" },
-    buy = { "buy", "shop", "purchase", "store", "vendor", "mua", "cua hang", "cửa hàng" },
-    emergency = { "fire", "burn", "extinguish", "faint", "unconscious", "revive", "carry", "rescue", "ritual", "candle", "lua", "lửa", "chay", "cháy", "ngat", "ngất", "cuu", "cứu", "extinguisher", "bed", "syrup", "maple" },
+local promptDesk = {
+    "check", "greet", "photo", "camera", "cctv", "shutter", "admit", "register",
+    "inspect", "window", "patient", "form", "scan", "desk", "reception", "counter",
+    "interact", "e", "press", "use", "talk", "view",
+    "kiem", "kiểm", "chup", "chụp", "anh", "ảnh", "tiep nhan", "tiếp nhận",
+    "quay", "le tan", "lễ tân", "mo cua", "mở cửa", "dong cua", "đóng cửa",
+    "man", "màn", "cho vao", "cho vào", "stamp", "benh nhan", "bệnh nhân",
+    "ca lam", "ca làm", "thu ky", "thư ký", "tiep", "tiếp",
+}
+
+local promptCoffee = { "coffee", "cafe", "chocolate", "drink", "brew", "ca phe", "cà phê", "machine", "nuoc", "nước" }
+local promptHeal = { "med", "medicine", "bandage", "heal", "potion", "pill", "ointment", "thuoc", "thuốc", "hoi", "hồi", "chua", "chữa", "bang", "băng", "eat", "use", "drink" }
+local promptBuy = { "buy", "shop", "purchase", "store", "vendor", "mua", "cua hang", "cửa hàng" }
+local promptEmergency = { "fire", "burn", "extinguish", "faint", "unconscious", "revive", "carry", "rescue", "ritual", "candle", "extinguisher", "bed", "syrup", "maple", "lua", "lửa", "chay", "cháy", "ngat", "ngất", "cuu", "cứu" }
+
+local remoteWords = {
+    "check", "admit", "register", "patient", "reception", "desk", "front", "nurse",
+    "photo", "camera", "cctv", "shutter", "stamp", "secretary", "coffee", "sanity",
+    "notify", "deliver", "emergency", "fire", "revive", "carry", "treat", "heal",
+    "shift", "work", "job", "dna", "analy", "monitor", "portal", "door",
 }
 
 local function log(msg)
@@ -67,6 +81,10 @@ local function log(msg)
     pcall(function()
         StarterGui:SetCore("SendNotification", { Title = "AH Night100", Text = tostring(msg), Duration = 2 })
     end)
+end
+
+local function setStatus(t)
+    statusText = t
 end
 
 local function root()
@@ -95,6 +113,33 @@ local function hasAny(text, words)
         if string.find(text, w, 1, true) then return true end
     end
     return false
+end
+
+local function guiLabel(g)
+    local parts = { lower(g.Name) }
+    if g:IsA("GuiObject") then
+        if g:IsA("TextButton") or g:IsA("TextLabel") then
+            table.insert(parts, lower(g.Text))
+        end
+    end
+    for _, ch in ipairs(g:GetDescendants()) do
+        if ch:IsA("TextLabel") or ch:IsA("TextButton") then
+            table.insert(parts, lower(ch.Text))
+        end
+    end
+    return table.concat(parts, "|")
+end
+
+local function isGuiShown(g)
+    if not g:IsA("GuiObject") then return false end
+    if not g.Visible then return false end
+    local p = g
+    while p do
+        if p:IsA("GuiObject") and not p.Visible then return false end
+        if p:IsA("ScreenGui") and not p.Enabled then return false end
+        p = p.Parent
+    end
+    return true
 end
 
 local function promptPart(p)
@@ -132,25 +177,79 @@ end
 local function pressE()
     pcall(function()
         VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-        task.wait(0.06)
+        task.wait(0.05)
         VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
     end)
 end
 
 local function firePrompt(p)
-    if not p or not p:IsA("ProximityPrompt") or not p.Enabled then return false end
+    if not p or not p:IsA("ProximityPrompt") or not p.Enabled or not p.Parent then
+        return false
+    end
+
+    pcall(function()
+        p.RequiresLineOfSight = false
+        if p.MaxActivationDistance < 20 then
+            p.MaxActivationDistance = 20
+        end
+    end)
+
     if hasFirePrompt then
         local ok = pcall(function()
             fireproximityprompt(p, 0)
-            if p.HoldDuration and p.HoldDuration > 0 then
-                task.wait(p.HoldDuration + 0.05)
-                fireproximityprompt(p, 1)
-            end
+            local hold = p.HoldDuration or 0
+            if hold > 0 then task.wait(hold + 0.03) end
+            fireproximityprompt(p, 1)
         end)
         if ok then return true end
     end
+
+    local ok2 = pcall(function()
+        p:InputHoldBegin()
+        local hold = p.HoldDuration or 0
+        if hold > 0 then task.wait(hold + 0.03) else task.wait(0.08) end
+        p:InputHoldEnd()
+    end)
+    if ok2 then return true end
+
     pressE()
     return true
+end
+
+local function scanRemotes()
+    remotes = {}
+    local roots = { RS }
+    for _, name in ipairs({ "Remotes", "Net", "RemoteEvents", "Events", "Packages" }) do
+        local f = RS:FindFirstChild(name)
+        if f then table.insert(roots, f) end
+    end
+    for _, tree in ipairs(roots) do
+        for _, obj in ipairs(tree:GetDescendants()) do
+            if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") or obj:IsA("UnreliableRemoteEvent") then
+                table.insert(remotes, obj)
+            end
+        end
+    end
+end
+
+local function tryRemotes(words)
+    local now = os.clock()
+    for _, r in ipairs(remotes) do
+        if hasAny(r.Name, words) then
+            if now - (lastRemote[r] or 0) >= cfg.remoteCooldown then
+                lastRemote[r] = now
+                pcall(function()
+                    if r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent") then
+                        r:FireServer()
+                    elseif r:IsA("RemoteFunction") then
+                        r:InvokeServer()
+                    end
+                end)
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local function refreshPromptCache()
@@ -161,11 +260,12 @@ local function refreshPromptCache()
         if obj:IsA("ProximityPrompt") and obj.Enabled and obj.Parent then
             local part = promptPart(obj)
             if part then
+                local d = dist(part)
                 table.insert(promptCache, {
                     prompt = obj,
                     part = part,
                     label = promptLabel(obj),
-                    dist = dist(part)
+                    dist = d,
                 })
             end
         end
@@ -185,32 +285,50 @@ local function nearestPrompt(maxRange, words)
     return nil
 end
 
-local function tryPrompts(maxRange, words)
+local function fireNearestAny(maxRange)
     refreshPromptCache()
-    local fired = false
     for _, item in ipairs(promptCache) do
         if item.dist <= maxRange and item.prompt.Parent then
-            if not words or hasAny(item.label, words) then
-                if firePrompt(item.prompt) then
-                    fired = true
-                end
+            if firePrompt(item.prompt) then
+                return true
             end
         end
     end
-    return fired
+    return false
+end
+
+local function tryClickDetectors(maxRange)
+    local r = root()
+    if not r then return false end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("ClickDetector") and obj.Parent and obj.Parent:IsA("BasePart") then
+            if dist(obj.Parent) <= maxRange then
+                pcall(function()
+                    fireSignal(obj.MouseClick)
+                    if fireclickdetector and typeof(fireclickdetector) == "function" then
+                        fireclickdetector(obj, 0)
+                    end
+                end)
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local function clickGuiByWords(words)
     local pg = LP:FindFirstChild("PlayerGui")
     if not pg then return false end
     local clicked = false
+    local ourGui = pg:FindFirstChild("AH_Night100_UI")
     for _, g in ipairs(pg:GetDescendants()) do
-        if (g:IsA("TextButton") or g:IsA("ImageButton")) and g.Visible then
-            local label = lower(g.Name) .. "|" .. lower(g.Text or "")
-            if hasAny(label, words) then
-                fireSignal(g.MouseButton1Click)
-                fireSignal(g.Activated)
-                clicked = true
+        if (g:IsA("TextButton") or g:IsA("ImageButton")) and isGuiShown(g) then
+            if not (ourGui and g:IsDescendantOf(ourGui)) then
+                if hasAny(guiLabel(g), words) then
+                    fireSignal(g.MouseButton1Click)
+                    fireSignal(g.Activated)
+                    clicked = true
+                end
             end
         end
     end
@@ -218,9 +336,9 @@ local function clickGuiByWords(words)
 end
 
 local function deskGuiCycle()
-    local words = deskGuiWords[deskStep]
+    local words = deskGuiSteps[deskStep]
     if clickGuiByWords(words) then
-        deskStep = deskStep % #deskGuiWords + 1
+        deskStep = deskStep % #deskGuiSteps + 1
         return true
     end
     return false
@@ -228,9 +346,9 @@ end
 
 local function useHealItems()
     local h = hum()
-    if not h or h.Health >= h.MaxHealth then return end
+    if not h or h.Health >= h.MaxHealth * 0.92 then return end
     local function tryTool(t)
-        if t:IsA("Tool") and hasAny(t.Name, promptGroups.heal) then
+        if t:IsA("Tool") and hasAny(t.Name, promptHeal) then
             pcall(function()
                 h:EquipTool(t)
                 t:Activate()
@@ -262,7 +380,6 @@ local function lowGfxOnce()
         for _, obj in ipairs(workspace:GetDescendants()) do
             pcall(function()
                 if obj:IsA("Decal") or obj:IsA("Texture") then
-                    obj.Texture = ""
                     obj.Transparency = 1
                 elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam") or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
                     obj.Enabled = false
@@ -278,51 +395,97 @@ end
 local function setBoost(on)
     local h = hum()
     if not h then return end
-    h.WalkSpeed = on and 22 or 16
-    h.JumpPower = on and 50 or 50
+    h.WalkSpeed = on and 24 or 16
+end
+
+local function hookInstantPrompts()
+    table.insert(conns, PPS.PromptShown:Connect(function(prompt)
+        if not ON then return end
+        task.defer(function()
+            pcall(function() firePrompt(prompt) end)
+        end)
+    end))
+
+    table.insert(conns, workspace.DescendantAdded:Connect(function(obj)
+        if not ON then return end
+        if obj:IsA("ProximityPrompt") and obj.Enabled then
+            task.defer(function()
+                task.wait(0.05)
+                if ON and obj.Parent then
+                    pcall(function() firePrompt(obj) end)
+                end
+            end)
+        end
+    end))
 end
 
 local function mainStep()
     if os.clock() - lastAct < cfg.actionCooldown then return end
 
-    -- 1) Desk GUI cycle (photo -> camera -> admit) like premium scripts
+    refreshPromptCache()
+    setStatus(string.format("P:%d R:%d", #promptCache, #remotes))
+
+    -- Desk: GUI buttons (photo/camera/admit/shutter)
     if deskGuiCycle() then
         lastAct = os.clock()
+        setStatus("desk GUI")
         return
     end
 
-    -- 2) Instant prompts at desk
-    local p = nearestPrompt(cfg.deskRange, promptGroups.desk)
+    -- Desk: nearest prompt (keyword OR any within 10 studs)
+    local p = nearestPrompt(cfg.deskRange, promptDesk)
+    if not p then
+        p = nearestPrompt(cfg.nearRange, nil)
+    end
     if p and firePrompt(p) then
         lastAct = os.clock()
+        setStatus("desk prompt")
         return
     end
 
-    -- 3) Emergency first if detected nearby
-    if tryPrompts(cfg.emergencyRange, promptGroups.emergency) then
+    if tryRemotes(remoteWords) then
         lastAct = os.clock()
+        setStatus("remote")
         return
     end
 
-    -- 4) Self sustain
+    if tryClickDetectors(cfg.interactRange) then
+        lastAct = os.clock()
+        setStatus("click")
+        return
+    end
+
+    -- Emergency
+    p = nearestPrompt(cfg.emergencyRange, promptEmergency)
+    if p and firePrompt(p) then
+        lastAct = os.clock()
+        setStatus("emergency")
+        return
+    end
+
     useHealItems()
-    if nearestPrompt(cfg.interactRange, promptGroups.coffee) and firePrompt(nearestPrompt(cfg.interactRange, promptGroups.coffee)) then
+
+    p = nearestPrompt(cfg.interactRange, promptCoffee)
+    if p and firePrompt(p) then
         lastAct = os.clock()
+        setStatus("coffee")
         return
     end
 
-  -- 5) Buy supplies when near shop prompts
-    p = nearestPrompt(cfg.interactRange, promptGroups.buy)
+    p = nearestPrompt(cfg.interactRange, promptBuy)
     if p and firePrompt(p) then
         lastAct = os.clock()
+        setStatus("buy")
     end
 end
 
 local function start()
+    scanRemotes()
+    hookInstantPrompts()
     table.insert(conns, LP.Idled:Connect(function()
         pcall(function()
             VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-            task.wait(0.2)
+            task.wait(0.15)
             VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
         end)
     end))
@@ -334,19 +497,18 @@ local function start()
             task.wait(cfg.loopDelay)
         end
     end)
+    log("ON | firePrompt:" .. tostring(hasFirePrompt) .. " remotes:" .. #remotes)
 end
 
 local function stop()
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     conns = {}
     setBoost(false)
+    setStatus("off")
 end
 
--- UI (always create)
+-- UI
 local pg = LP:WaitForChild("PlayerGui")
-local oldGui = pg:FindFirstChild("AH_Night100_UI")
-if oldGui then oldGui:Destroy() end
-
 local gui = Instance.new("ScreenGui")
 gui.Name = "AH_Night100_UI"
 gui.ResetOnSpawn = false
@@ -355,18 +517,35 @@ gui.ZIndexBehavior = Enum.Sibling
 gui.Parent = pg
 
 local btn = Instance.new("TextButton")
-btn.Size = UDim2.new(0, 180, 0, 54)
-btn.Position = UDim2.new(0, 20, 0.5, -27)
-btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+btn.Size = UDim2.new(0, 190, 0, 58)
+btn.Position = UDim2.new(0, 16, 0.5, -29)
+btn.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
 btn.TextColor3 = Color3.new(1, 1, 1)
 btn.Font = Enum.Font.GothamBold
-btn.TextSize = 16
+btn.TextSize = 15
 btn.Text = "AH: OFF"
 btn.Parent = gui
 
 local corner = Instance.new("UICorner")
 corner.CornerRadius = UDim.new(0, 10)
 corner.Parent = btn
+
+local sub = Instance.new("TextLabel")
+sub.Size = UDim2.new(0, 190, 0, 18)
+sub.Position = UDim2.new(0, 16, 0.5, 32)
+sub.BackgroundTransparency = 1
+sub.TextColor3 = Color3.fromRGB(180, 180, 180)
+sub.Font = Enum.Font.Gotham
+sub.TextSize = 11
+sub.Text = "v3 ready"
+sub.Parent = gui
+
+task.spawn(function()
+    while gui.Parent do
+        sub.Text = statusText
+        task.wait(0.25)
+    end
+end)
 
 local dragging, dragStart, startPos = false
 btn.InputBegan:Connect(function(input)
@@ -385,20 +564,15 @@ UIS.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
         local d = input.Position - dragStart
         btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        sub.Position = UDim2.new(btn.Position.X.Scale, btn.Position.X.Offset, btn.Position.Y.Scale, btn.Position.Y.Offset + 61)
     end
 end)
 
 btn.MouseButton1Click:Connect(function()
     ON = not ON
     btn.Text = ON and "AH: ON" or "AH: OFF"
-    btn.BackgroundColor3 = ON and Color3.fromRGB(34, 145, 65) or Color3.fromRGB(40, 40, 40)
-    if ON then
-        start()
-        log("Pro mode ON")
-    else
-        stop()
-        log("Pro mode OFF")
-    end
+    btn.BackgroundColor3 = ON and Color3.fromRGB(34, 145, 65) or Color3.fromRGB(38, 38, 38)
+    if ON then start() else stop() end
 end)
 
 LP.CharacterAdded:Connect(function()
@@ -406,4 +580,6 @@ LP.CharacterAdded:Connect(function()
     if ON then setBoost(true) end
 end)
 
-log("AH Night100 Pro loaded")
+scanRemotes()
+setStatus("v3 | R:" .. #remotes)
+log("AH v3 loaded")
