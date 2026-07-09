@@ -16,6 +16,7 @@ local StarterGui = game:GetService("StarterGui")
 local Lighting = game:GetService("Lighting")
 local RS = game:GetService("ReplicatedStorage")
 local PPS = game:GetService("ProximityPromptService")
+local GuiService = game:GetService("GuiService")
 
 local LP = Players.LocalPlayer
 if not LP then LP = Players.PlayerAdded:Wait() end
@@ -507,72 +508,158 @@ local function stop()
     setStatus("off")
 end
 
--- UI
+-- UI (ESC / RightControl opens menu + frees mouse for T1)
 local pg = LP:WaitForChild("PlayerGui")
 local gui = Instance.new("ScreenGui")
 gui.Name = "AH_Night100_UI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.Sibling
+gui.DisplayOrder = 999
 gui.Parent = pg
 
-local btn = Instance.new("TextButton")
-btn.Size = UDim2.new(0, 190, 0, 58)
-btn.Position = UDim2.new(0, 16, 0.5, -29)
-btn.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
-btn.TextColor3 = Color3.new(1, 1, 1)
-btn.Font = Enum.Font.GothamBold
-btn.TextSize = 15
-btn.Text = "AH: OFF"
-btn.Parent = gui
+local menuOpen = false
 
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 10)
-corner.Parent = btn
+local function freeMouse()
+    pcall(function()
+        UIS.MouseBehavior = Enum.MouseBehavior.Default
+        UIS.MouseIconEnabled = true
+    end)
+end
+
+local function refreshBtn()
+    btn.Text = ON and "BẬT AUTO (ON)" or "TẮT AUTO (OFF)"
+    btn.BackgroundColor3 = ON and Color3.fromRGB(34, 145, 65) or Color3.fromRGB(55, 55, 55)
+end
+
+local function toggleFarm()
+    ON = not ON
+    refreshBtn()
+    if ON then start() else stop() end
+end
+
+local function setMenuVisible(show)
+    menuOpen = show
+    overlay.Visible = show
+    panel.Visible = show
+    hint.Visible = not show
+    if show then freeMouse() end
+end
+
+local hint = Instance.new("TextLabel")
+hint.Size = UDim2.new(0, 220, 0, 28)
+hint.Position = UDim2.new(0, 12, 0, 12)
+hint.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+hint.BackgroundTransparency = 0.35
+hint.TextColor3 = Color3.fromRGB(220, 220, 220)
+hint.Font = Enum.Font.Gotham
+hint.TextSize = 12
+hint.Text = "ESC / RCtrl = Menu  |  F6 = ON/OFF"
+hint.Parent = gui
+Instance.new("UICorner", hint).CornerRadius = UDim.new(0, 6)
+
+local overlay = Instance.new("TextButton")
+overlay.Name = "Overlay"
+overlay.Size = UDim2.new(1, 0, 1, 0)
+overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+overlay.BackgroundTransparency = 0.45
+overlay.Text = ""
+overlay.AutoButtonColor = false
+overlay.Visible = false
+overlay.ZIndex = 1
+overlay.Parent = gui
+
+local panel = Instance.new("Frame")
+panel.Name = "Panel"
+panel.Size = UDim2.new(0, 300, 0, 220)
+panel.Position = UDim2.new(0.5, -150, 0.5, -110)
+panel.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+panel.BorderSizePixel = 0
+panel.Visible = false
+panel.ZIndex = 2
+panel.Active = true
+panel.Parent = gui
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 12)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -20, 0, 36)
+title.Position = UDim2.new(0, 10, 0, 8)
+title.BackgroundTransparency = 1
+title.Text = "AH Night100"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 18
+title.ZIndex = 3
+title.Parent = panel
 
 local sub = Instance.new("TextLabel")
-sub.Size = UDim2.new(0, 190, 0, 18)
-sub.Position = UDim2.new(0, 16, 0.5, 32)
+sub.Size = UDim2.new(1, -20, 0, 40)
+sub.Position = UDim2.new(0, 10, 0, 44)
 sub.BackgroundTransparency = 1
-sub.TextColor3 = Color3.fromRGB(180, 180, 180)
+sub.TextColor3 = Color3.fromRGB(170, 170, 170)
 sub.Font = Enum.Font.Gotham
-sub.TextSize = 11
+sub.TextSize = 12
+sub.TextWrapped = true
 sub.Text = "v3 ready"
-sub.Parent = gui
+sub.ZIndex = 3
+sub.Parent = panel
+
+local btn = Instance.new("TextButton")
+btn.Size = UDim2.new(1, -40, 0, 52)
+btn.Position = UDim2.new(0, 20, 0, 100)
+btn.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+btn.TextColor3 = Color3.new(1, 1, 1)
+btn.Font = Enum.Font.GothamBold
+btn.TextSize = 16
+btn.Text = "TẮT AUTO (OFF)"
+btn.ZIndex = 3
+btn.Parent = panel
+Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(1, -40, 0, 36)
+closeBtn.Position = UDim2.new(0, 20, 0, 164)
+closeBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+closeBtn.Font = Enum.Font.Gotham
+closeBtn.TextSize = 14
+closeBtn.Text = "Đóng (ESC)"
+closeBtn.ZIndex = 3
+closeBtn.Parent = panel
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
 task.spawn(function()
     while gui.Parent do
-        sub.Text = statusText
+        sub.Text = statusText .. "\nF6 bật/tắt nhanh không cần chuột"
         task.wait(0.25)
     end
 end)
 
-local dragging, dragStart, startPos = false
-btn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = btn.Position
-    end
-end)
-btn.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
-end)
-UIS.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local d = input.Position - dragStart
-        btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-        sub.Position = UDim2.new(btn.Position.X.Scale, btn.Position.X.Offset, btn.Position.Y.Scale, btn.Position.Y.Offset + 61)
+btn.MouseButton1Click:Connect(toggleFarm)
+closeBtn.MouseButton1Click:Connect(function() setMenuVisible(false) end)
+overlay.MouseButton1Click:Connect(function() setMenuVisible(false) end)
+
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.Escape then
+        task.defer(function()
+            setMenuVisible(true)
+            freeMouse()
+        end)
+    elseif input.KeyCode == Enum.KeyCode.RightControl then
+        setMenuVisible(not menuOpen)
+    elseif input.KeyCode == Enum.KeyCode.F6 then
+        toggleFarm()
     end
 end)
 
-btn.MouseButton1Click:Connect(function()
-    ON = not ON
-    btn.Text = ON and "AH: ON" or "AH: OFF"
-    btn.BackgroundColor3 = ON and Color3.fromRGB(34, 145, 65) or Color3.fromRGB(38, 38, 38)
-    if ON then start() else stop() end
+GuiService.MenuOpened:Connect(function()
+    setMenuVisible(true)
+    freeMouse()
+end)
+
+GuiService.MenuClosed:Connect(function()
+    setMenuVisible(false)
 end)
 
 LP.CharacterAdded:Connect(function()
