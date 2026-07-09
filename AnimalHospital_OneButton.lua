@@ -47,6 +47,10 @@ local xrayLastFlash = 0
 local xrayPhase = "idle"
 local xrayLit = {}
 local xrayBtns = {}
+local xrayBase = {}
+local xrayInRoom = false
+local xrayRoomAt = 0
+local xrayCollectAt = 0
 
 local cfg = {
     loopDelay = 0.12,
@@ -57,6 +61,9 @@ local cfg = {
     interactRange = 14,
     emergencyRange = 50,
     remoteCooldown = 1.8,
+    xraySilence = 2.4,
+    xrayClickGap = 0.42,
+    autoStart = true,
 }
 
 local lastRemote = {}
@@ -373,83 +380,154 @@ end
 local function colorId(c)
     if c.R > 0.65 and c.G < 0.45 and c.B < 0.45 then return "red" end
     if c.G > 0.45 and c.R < 0.45 and c.B < 0.5 then return "green" end
-    if c.B > 0.45 and c.R < 0.35 then return "blue" end
+    if c.R > 0.55 and c.G > 0.55 and c.B < 0.45 then return "yellow" end
+    if c.B > 0.35 and c.R < 0.35 and c.G < 0.55 then return "blue" end
     if c.R > 0.65 and c.G > 0.45 and c.B < 0.35 then return "orange" end
     if c.R > 0.55 and c.G < 0.45 and c.B > 0.45 then return "pink" end
     if c.G > 0.45 and c.B > 0.5 and c.R < 0.45 then return "cyan" end
     return nil
 end
 
-local function isInXrayRoom()
+local function btnBright(c)
+    return (c.R + c.G + c.B) / 3
+end
+
+local function isInXrayRoom(force)
+    if not force and os.clock() - xrayRoomAt < 1.2 then return xrayInRoom end
+    xrayRoomAt = os.clock()
     local r = root()
-    if not r then return false end
+    if not r then
+        xrayInRoom = false
+        return false
+    end
+    local found = false
     for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("TextLabel") then
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
             local t = lower(obj.Text)
-            if hasAny(t, { "chup x", "chụp x", "x-quang", "x quang", "x-ray", "xray" }) then
+            if hasAny(t, { "chup x", "chụp x", "x-quang", "x quang", "x-ray", "xray", "chup x quang", "chụp x quang" }) then
                 local part = obj:FindFirstAncestorWhichIsA("BasePart")
-                if part and dist(part) < 45 then return true end
+                if part and dist(part) < 50 then
+                    found = true
+                    break
+                end
             end
-        elseif obj:IsA("BasePart") and dist(obj) < 28 then
+        elseif obj:IsA("BasePart") and dist(obj) < 30 then
             local t = lower(obj.Name .. "|" .. obj:GetFullName())
             if hasAny(t, { "xray", "x-ray", "xrayroom", "room6", "x_quang", "xquang" }) then
-                return true
+                found = true
+                break
             end
         end
     end
-    local colored = 0
-    for _, p in ipairs(workspace:GetDescendants()) do
-        if p:IsA("BasePart") and dist(p) < 16 and colorId(p.Color) then
-            if p:FindFirstChildWhichIsA("ClickDetector") then
+    if not found then
+        local colored = 0
+        for _, p in ipairs(workspace:GetDescendants()) do
+            if p:IsA("BasePart") and dist(p) < 18 and colorId(p.Color) then
                 colored = colored + 1
+                if colored >= 4 then
+                    found = true
+                    break
+                end
             end
         end
     end
-    return colored >= 3
+    if not found then
+        xrayBase = {}
+    end
+    xrayInRoom = found
+    return found
+end
+
+local function clickWorldPart(part)
+    local cam = workspace.CurrentCamera
+    if not cam or not part then return false end
+    local clicked = false
+    pcall(function()
+        local v, onScreen = cam:WorldToViewportPoint(part.Position)
+        if onScreen and v.Z > 0 then
+            VIM:SendMouseButtonEvent(v.X, v.Y, 0, true, game, 0)
+            task.wait(0.04)
+            VIM:SendMouseButtonEvent(v.X, v.Y, 0, false, game, 0)
+            clicked = true
+        end
+    end)
+    return clicked
 end
 
 local function clickPart(part)
     if not part or not part:IsA("BasePart") then return false end
-    local cd = part:FindFirstChildWhichIsA("ClickDetector")
+    local cd = part:FindFirstChildWhichIsA("ClickDetector", true)
     if cd then
+        local ok = false
         pcall(function()
             if typeof(fireclickdetector) == "function" then
                 fireclickdetector(cd, 0)
+                ok = true
             end
             fireSignal(cd.MouseClick)
+            ok = true
         end)
-        return true
+        if ok then return true end
     end
-    for _, ch in ipairs(part:GetChildren()) do
+    if clickWorldPart(part) then return true end
+    for _, ch in ipairs(part:GetDescendants()) do
         if ch:IsA("ProximityPrompt") and firePrompt(ch) then return true end
     end
     return false
 end
 
 local function collectXrayButtons()
+    if os.clock() - xrayCollectAt < 0.35 then return end
+    xrayCollectAt = os.clock()
     xrayBtns = {}
     for _, p in ipairs(workspace:GetDescendants()) do
-        if p:IsA("BasePart") and dist(p) < 16 then
+        if p:IsA("BasePart") and dist(p) < 18 then
             local id = colorId(p.Color)
-            if id and p:FindFirstChildWhichIsA("ClickDetector") then
+            if id then
                 table.insert(xrayBtns, { part = p, id = id })
+                if not xrayBase[p] then
+                    xrayBase[p] = {
+                        color = p.Color,
+                        material = p.Material,
+                        bright = btnBright(p.Color),
+                    }
+                end
             end
         end
     end
+    table.sort(xrayBtns, function(a, b)
+        return a.part.Position.X < b.part.Position.X
+    end)
 end
 
 local function partLit(part)
     local hl = part:FindFirstChildOfClass("Highlight")
     if hl and hl.Enabled then return true end
     local pl = part:FindFirstChildOfClass("PointLight")
-    if pl and pl.Enabled and pl.Brightness > 0.25 then return true end
+    if pl and pl.Enabled and pl.Brightness > 0.2 then return true end
     if part.Material == Enum.Material.Neon then return true end
     local sel = part:FindFirstChildOfClass("SelectionBox")
     if sel and sel.Visible then return true end
+    local base = xrayBase[part]
+    if base and btnBright(part.Color) > base.bright + 0.16 then return true end
+    for _, ch in ipairs(part:GetDescendants()) do
+        if ch:IsA("SurfaceGui") or ch:IsA("BillboardGui") then
+            for _, g in ipairs(ch:GetDescendants()) do
+                if g:IsA("GuiObject") and g.Visible then
+                    if g:IsA("ImageLabel") and g.ImageTransparency < 0.4 then return true end
+                    if (g:IsA("Frame") or g:IsA("TextLabel")) and g.BackgroundTransparency < 0.45 then
+                        if btnBright(g.BackgroundColor3) > 0.72 then return true end
+                    end
+                end
+            end
+        end
+    end
     return false
 end
 
 local function xrayStep()
+    if xrayPhase == "play" then return true end
+
     if not isInXrayRoom() then
         xraySeq = {}
         xrayPhase = "idle"
@@ -458,6 +536,10 @@ local function xrayStep()
     end
 
     collectXrayButtons()
+    if #xrayBtns < 3 then
+        setStatus("X-Quang: tim nut (" .. #xrayBtns .. ")")
+        return false
+    end
 
     for _, b in ipairs(xrayBtns) do
         local lit = partLit(b.part)
@@ -466,21 +548,27 @@ local function xrayStep()
             table.insert(xraySeq, b.part)
             xrayLastFlash = os.clock()
             xrayPhase = "record"
+            setStatus("X-Quang ghi:" .. #xraySeq)
         end
         xrayLit[b.part] = lit
     end
 
-    if xrayPhase == "record" and #xraySeq > 0 and os.clock() - xrayLastFlash > 1.05 then
+    if xrayPhase == "record" and #xraySeq > 0 and os.clock() - xrayLastFlash > cfg.xraySilence then
         xrayPhase = "play"
         local seq = xraySeq
         xraySeq = {}
+        setStatus("X-Quang bam:" .. #seq)
         task.spawn(function()
             for _, part in ipairs(seq) do
-                if part.Parent then clickPart(part) end
-                task.wait(0.38)
+                if part.Parent then
+                    clickPart(part)
+                    task.wait(cfg.xrayClickGap)
+                end
             end
             xrayPhase = "idle"
             xrayLit = {}
+            xrayBase = {}
+            setStatus("X-Quang xong")
         end)
         return true
     end
@@ -847,4 +935,14 @@ end)
 
 scanRemotes()
 setStatus(BRAND .. " | R:" .. #remotes)
-log(BRAND .. " loaded")
+log(BRAND .. " loaded | F6 bat/tat | ESC menu")
+
+if cfg.autoStart then
+    task.defer(function()
+        task.wait(0.6)
+        if not ON then
+            toggleFarm()
+            log("Auto ON")
+        end
+    end)
+end
