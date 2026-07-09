@@ -24,6 +24,7 @@ local Lighting = game:GetService("Lighting")
 local RS = game:GetService("ReplicatedStorage")
 local PPS = game:GetService("ProximityPromptService")
 local GuiService = game:GetService("GuiService")
+local CAS = game:GetService("ContextActionService")
 
 local LP = Players.LocalPlayer
 if not LP then LP = Players.PlayerAdded:Wait() end
@@ -1064,15 +1065,46 @@ end
 
 -- UI (ESC / RightControl opens menu + frees mouse for T1)
 local pg = LP:WaitForChild("PlayerGui")
+local MENU_ACTION = "VuuyPrivate_MenuEsc"
+
+local function getGuiParent()
+    if typeof(gethui) == "function" then
+        local ok, hui = pcall(gethui)
+        if ok and hui then return hui end
+    end
+    return pg
+end
+
 local gui = Instance.new("ScreenGui")
 gui.Name = GUI_NAME
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
-gui.ZIndexBehavior = Enum.Sibling
-gui.DisplayOrder = 999
-gui.Parent = pg
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+gui.DisplayOrder = 999999
+gui.Parent = getGuiParent()
 
 local menuOpen = false
+
+local function raiseGuiOnTop()
+    local parent = getGuiParent()
+    if gui.Parent ~= parent then
+        gui.Parent = parent
+    end
+    local top = 999999
+    for _, child in ipairs(pg:GetChildren()) do
+        if child:IsA("ScreenGui") and child ~= gui and child.DisplayOrder >= top then
+            top = child.DisplayOrder + 1
+        end
+    end
+    pcall(function()
+        for _, child in ipairs(parent:GetChildren()) do
+            if child:IsA("ScreenGui") and child ~= gui and child.DisplayOrder >= top then
+                top = child.DisplayOrder + 1
+            end
+        end
+    end)
+    gui.DisplayOrder = top
+end
 
 local function freeMouse()
     pcall(function()
@@ -1094,10 +1126,13 @@ end
 
 local function setMenuVisible(show)
     menuOpen = show
+    if show then
+        raiseGuiOnTop()
+        freeMouse()
+    end
     overlay.Visible = show
     panel.Visible = show
     hint.Visible = not show
-    if show then freeMouse() end
 end
 
 local hint = Instance.new("TextLabel")
@@ -1109,6 +1144,7 @@ hint.TextColor3 = Color3.fromRGB(220, 220, 220)
 hint.Font = Enum.Font.Gotham
 hint.TextSize = 12
 hint.Text = BRAND .. " | ESC/RCtrl Menu | F6 ON/OFF"
+hint.ZIndex = 50
 hint.Parent = gui
 Instance.new("UICorner", hint).CornerRadius = UDim.new(0, 6)
 
@@ -1120,7 +1156,7 @@ overlay.BackgroundTransparency = 0.45
 overlay.Text = ""
 overlay.AutoButtonColor = false
 overlay.Visible = false
-overlay.ZIndex = 1
+overlay.ZIndex = 10000
 overlay.Parent = gui
 
 local panel = Instance.new("Frame")
@@ -1130,7 +1166,7 @@ panel.Position = UDim2.new(0.5, -155, 0.5, -124)
 panel.BackgroundColor3 = Color3.fromRGB(22, 26, 38)
 panel.BorderSizePixel = 0
 panel.Visible = false
-panel.ZIndex = 2
+panel.ZIndex = 10001
 panel.Active = true
 panel.Parent = gui
 Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 12)
@@ -1143,7 +1179,7 @@ title.Text = BRAND
 title.TextColor3 = Color3.fromRGB(130, 200, 255)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 18
-title.ZIndex = 3
+title.ZIndex = 10002
 title.Parent = panel
 
 local sub = Instance.new("TextLabel")
@@ -1155,7 +1191,7 @@ sub.Font = Enum.Font.Gotham
 sub.TextSize = 11
 sub.TextWrapped = true
 sub.Text = BRAND_SUB
-sub.ZIndex = 3
+sub.ZIndex = 10002
 sub.Parent = panel
 
 local note = Instance.new("TextLabel")
@@ -1167,7 +1203,7 @@ note.Font = Enum.Font.Gotham
 note.TextSize = 10
 note.TextWrapped = true
 note.Text = "Auto tat ca phong: 1-5 DNA | 6 XQuang | 7 Tim | 8 Mo"
-note.ZIndex = 3
+note.ZIndex = 10002
 note.Parent = panel
 
 local btn = Instance.new("TextButton")
@@ -1178,7 +1214,7 @@ btn.TextColor3 = Color3.new(1, 1, 1)
 btn.Font = Enum.Font.GothamBold
 btn.TextSize = 16
 btn.Text = "TẮT AUTO (OFF)"
-btn.ZIndex = 3
+btn.ZIndex = 10002
 btn.Parent = panel
 Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
 
@@ -1190,7 +1226,7 @@ closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 closeBtn.Font = Enum.Font.Gotham
 closeBtn.TextSize = 14
 closeBtn.Text = "Đóng (ESC)"
-closeBtn.ZIndex = 3
+closeBtn.ZIndex = 10002
 closeBtn.Parent = panel
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
@@ -1207,21 +1243,30 @@ overlay.MouseButton1Click:Connect(function() setMenuVisible(false) end)
 
 UIS.InputBegan:Connect(function(input, gpe)
     if gpe then return end
-    if input.KeyCode == Enum.KeyCode.Escape then
-        task.defer(function()
-            setMenuVisible(true)
-            freeMouse()
-        end)
-    elseif input.KeyCode == Enum.KeyCode.RightControl then
+    if input.KeyCode == Enum.KeyCode.RightControl then
         setMenuVisible(not menuOpen)
     elseif input.KeyCode == Enum.KeyCode.F6 then
         toggleFarm()
     end
 end)
 
+pcall(function()
+    CAS:UnbindAction(MENU_ACTION)
+    CAS:BindActionAtPriority(MENU_ACTION, function(_, state)
+        if state ~= Enum.UserInputState.Begin then
+            return Enum.ContextActionResult.Pass
+        end
+        setMenuVisible(not menuOpen)
+        return Enum.ContextActionResult.Sink
+    end, false, 3000, Enum.KeyCode.Escape)
+end)
+
 GuiService.MenuOpened:Connect(function()
-    setMenuVisible(true)
-    freeMouse()
+    task.defer(function()
+        setMenuVisible(true)
+        raiseGuiOnTop()
+        freeMouse()
+    end)
 end)
 
 GuiService.MenuClosed:Connect(function()
