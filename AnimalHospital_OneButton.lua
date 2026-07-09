@@ -1,38 +1,71 @@
--- AH Night100 M4 - stable one-button build (VN + EN)
+-- AH Night100 Pro - Opiumware/Mac safe, desk auto like premium scripts
 
 local G = (typeof(getgenv) == "function" and getgenv()) or _G
-if G.AH_NIGHT100_V2 then
-    local old = game:GetService("Players").LocalPlayer.PlayerGui:FindFirstChild("AH_Night100_UI")
-    if old then old:Destroy() end
+if G.AH_NIGHT100_PRO then
+    pcall(function()
+        local pg = game:GetService("Players").LocalPlayer.PlayerGui
+        local old = pg:FindFirstChild("AH_Night100_UI")
+        if old then old:Destroy() end
+    end)
 end
-G.AH_NIGHT100_V2 = true
+G.AH_NIGHT100_PRO = true
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
+local VIM = game:GetService("VirtualInputManager")
 local VirtualUser = game:GetService("VirtualUser")
 local StarterGui = game:GetService("StarterGui")
 local Lighting = game:GetService("Lighting")
-local VIM = game:GetService("VirtualInputManager")
+local RS = game:GetService("ReplicatedStorage")
 
 local LP = Players.LocalPlayer
 if not LP then LP = Players.PlayerAdded:Wait() end
 
-local canFirePrompt = typeof(fireproximityprompt) == "function"
+local hasFirePrompt = typeof(fireproximityprompt) == "function"
+local hasFireSignal = typeof(firesignal) == "function"
+local hasGetConnections = typeof(getconnections) == "function"
 
 local ON = false
 local conns = {}
-local lastPrompt = 0
-local lastTool = 0
+local promptCache = {}
+local lastCache = 0
+local lastAct = 0
+local deskStep = 1
 local gfxDone = false
+
+local cfg = {
+    loopDelay = 0.15,
+    cacheRefresh = 2.5,
+    actionCooldown = 0.28,
+    deskRange = 16,
+    interactRange = 12,
+    emergencyRange = 45,
+}
+
+local deskGuiWords = {
+    { "photo", "chup", "chụp", "anh", "ảnh", "take" },
+    { "camera", "cctv", "cam", "monitor" },
+    { "admit", "accept", "register", "cho vao", "cho vào", "tiep nhan", "tiếp nhận", "stamp", "check" },
+}
+
+local promptGroups = {
+    desk = {
+        "check", "greet", "photo", "camera", "cctv", "shutter", "admit", "register",
+        "inspect", "window", "patient", "form", "scan", "desk", "reception", "counter",
+        "kiem", "kiểm", "chup", "chụp", "anh", "ảnh", "tiep nhan", "tiếp nhận",
+        "quay", "le tan", "lễ tân", "mo cua", "mở cửa", "dong cua", "đóng cửa",
+        "man", "màn", "cho vao", "cho vào", "stamp", "take", "interact", "e"
+    },
+    coffee = { "coffee", "cafe", "chocolate", "drink", "brew", "ca phe", "cà phê", "nuoc", "nước", "machine" },
+    heal = { "med", "medicine", "bandage", "heal", "potion", "pill", "ointment", "chocolate", "thuoc", "thuốc", "hoi", "hồi", "chua", "chữa", "bang", "băng", "eat", "use", "drink" },
+    buy = { "buy", "shop", "purchase", "store", "vendor", "mua", "cua hang", "cửa hàng" },
+    emergency = { "fire", "burn", "extinguish", "faint", "unconscious", "revive", "carry", "rescue", "ritual", "candle", "lua", "lửa", "chay", "cháy", "ngat", "ngất", "cuu", "cứu", "extinguisher", "bed", "syrup", "maple" },
+}
 
 local function log(msg)
     print("[AH]", msg)
     pcall(function()
-        StarterGui:SetCore("SendNotification", {
-            Title = "AH Night100",
-            Text = tostring(msg),
-            Duration = 2
-        })
+        StarterGui:SetCore("SendNotification", { Title = "AH Night100", Text = tostring(msg), Duration = 2 })
     end)
 end
 
@@ -48,8 +81,20 @@ end
 
 local function dist(part)
     local r = root()
-    if not r or not part or not part:IsA("BasePart") then return 9e9 end
+    if not r or not part or not part:IsA("BasePart") then return math.huge end
     return (r.Position - part.Position).Magnitude
+end
+
+local function lower(s)
+    return string.lower(tostring(s or ""))
+end
+
+local function hasAny(text, words)
+    text = lower(text)
+    for _, w in ipairs(words) do
+        if string.find(text, w, 1, true) then return true end
+    end
+    return false
 end
 
 local function promptPart(p)
@@ -65,55 +110,36 @@ local function promptPart(p)
     return parent:FindFirstChildWhichIsA("BasePart", true)
 end
 
-local function promptText(p)
-    return string.lower(tostring(p.Name) .. "|" .. tostring(p.ActionText) .. "|" .. tostring(p.ObjectText))
+local function promptLabel(p)
+    return lower(p.Name) .. "|" .. lower(p.ActionText) .. "|" .. lower(p.ObjectText)
 end
 
-local function hasAny(text, words)
-    for _, w in ipairs(words) do
-        if string.find(text, w, 1, true) then return true end
+local function fireSignal(sig)
+    if not sig then return end
+    if hasFireSignal then
+        pcall(function() firesignal(sig) end)
+        return
     end
-    return false
+    if hasGetConnections then
+        pcall(function()
+            for _, c in ipairs(getconnections(sig)) do
+                pcall(function() c:Fire() end)
+            end
+        end)
+    end
 end
-
-local deskWords = {
-    -- EN
-    "check", "greet", "photo", "camera", "cctv", "shutter", "admit", "register",
-    "inspect", "window", "patient", "form", "scan", "desk", "reception", "counter",
-    -- VN
-    "kiem", "kiểm", "chup", "chụp", "anh", "ảnh", "camera", "cua so", "cửa sổ",
-    "benh nhan", "bệnh nhân", "tiep nhan", "tiếp nhận", "quay", "le tan", "lễ tân",
-    "mo cua", "mở cửa", "dong cua", "đóng cửa", "man", "màn", "cho vao", "cho vào"
-}
-
-local healWords = {
-    "med", "medicine", "bandage", "heal", "potion", "pill", "ointment", "chocolate",
-    "thuoc", "thuốc", "hoi", "hồi", "chua", "chữa", "bang", "băng"
-}
-
-local coffeeWords = {
-    "coffee", "cafe", "chocolate", "drink", "brew", "ca phe", "cà phê", "nuoc", "nước"
-}
-
-local emergencyWords = {
-    "fire", "burn", "extinguish", "faint", "revive", "carry", "rescue", "ritual", "candle",
-    "lua", "lửa", "chay", "cháy", "ngat", "ngất", "cuu", "cứu", "benh", "bệnh"
-}
 
 local function pressE()
     pcall(function()
         VIM:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-        task.wait(0.08)
+        task.wait(0.06)
         VIM:SendKeyEvent(false, Enum.KeyCode.E, false, game)
     end)
 end
 
 local function firePrompt(p)
     if not p or not p:IsA("ProximityPrompt") or not p.Enabled then return false end
-    local part = promptPart(p)
-    if part and dist(part) > 14 then return false end
-
-    if canFirePrompt then
+    if hasFirePrompt then
         local ok = pcall(function()
             fireproximityprompt(p, 0)
             if p.HoldDuration and p.HoldDuration > 0 then
@@ -123,74 +149,96 @@ local function firePrompt(p)
         end)
         if ok then return true end
     end
-
     pressE()
     return true
 end
 
-local function nearestPrompt(words, maxDist)
-    maxDist = maxDist or 14
-    local best, bestD
+local function refreshPromptCache()
+    if os.clock() - lastCache < cfg.cacheRefresh then return end
+    lastCache = os.clock()
+    promptCache = {}
     for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("ProximityPrompt") and obj.Enabled then
+        if obj:IsA("ProximityPrompt") and obj.Enabled and obj.Parent then
             local part = promptPart(obj)
             if part then
-                local d = dist(part)
-                if d <= maxDist then
-                    local t = promptText(obj)
-                    if not words or hasAny(t, words) then
-                        if not bestD or d < bestD then
-                            best = obj
-                            bestD = d
-                        end
-                    end
+                table.insert(promptCache, {
+                    prompt = obj,
+                    part = part,
+                    label = promptLabel(obj),
+                    dist = dist(part)
+                })
+            end
+        end
+    end
+    table.sort(promptCache, function(a, b) return a.dist < b.dist end)
+end
+
+local function nearestPrompt(maxRange, words)
+    refreshPromptCache()
+    for _, item in ipairs(promptCache) do
+        if item.dist <= maxRange and item.prompt.Parent then
+            if not words or hasAny(item.label, words) then
+                return item.prompt
+            end
+        end
+    end
+    return nil
+end
+
+local function tryPrompts(maxRange, words)
+    refreshPromptCache()
+    local fired = false
+    for _, item in ipairs(promptCache) do
+        if item.dist <= maxRange and item.prompt.Parent then
+            if not words or hasAny(item.label, words) then
+                if firePrompt(item.prompt) then
+                    fired = true
                 end
             end
         end
     end
-    return best
+    return fired
 end
 
-local function clickVisibleButtons(words)
+local function clickGuiByWords(words)
     local pg = LP:FindFirstChild("PlayerGui")
-    if not pg then return end
+    if not pg then return false end
+    local clicked = false
     for _, g in ipairs(pg:GetDescendants()) do
         if (g:IsA("TextButton") or g:IsA("ImageButton")) and g.Visible then
-            local label = string.lower(tostring(g.Name) .. "|" .. tostring(g.Text or ""))
+            local label = lower(g.Name) .. "|" .. lower(g.Text or "")
             if hasAny(label, words) then
-                pcall(function()
-                    if typeof(getconnections) == "function" then
-                        for _, sig in ipairs({ g.MouseButton1Click, g.Activated }) do
-                            if sig then
-                                for _, c in ipairs(getconnections(sig)) do
-                                    pcall(function() c:Fire() end)
-                                end
-                            end
-                        end
-                    end
-                end)
+                fireSignal(g.MouseButton1Click)
+                fireSignal(g.Activated)
+                clicked = true
             end
         end
     end
+    return clicked
 end
 
-local function useHealTool()
-    if os.clock() - lastTool < 1.2 then return end
-    local h = hum()
-    if not h then return end
+local function deskGuiCycle()
+    local words = deskGuiWords[deskStep]
+    if clickGuiByWords(words) then
+        deskStep = deskStep % #deskGuiWords + 1
+        return true
+    end
+    return false
+end
 
-    local function tryTool(tool)
-        if tool:IsA("Tool") and hasAny(string.lower(tool.Name), healWords) then
+local function useHealItems()
+    local h = hum()
+    if not h or h.Health >= h.MaxHealth then return end
+    local function tryTool(t)
+        if t:IsA("Tool") and hasAny(t.Name, promptGroups.heal) then
             pcall(function()
-                h:EquipTool(tool)
-                tool:Activate()
+                h:EquipTool(t)
+                t:Activate()
             end)
-            lastTool = os.clock()
             return true
         end
         return false
     end
-
     local char = LP.Character
     if char then
         for _, t in ipairs(char:GetChildren()) do
@@ -227,51 +275,46 @@ local function lowGfxOnce()
     end)
 end
 
-local function loopStep()
-    if os.clock() - lastPrompt < 0.35 then return end
-
-    -- Priority 1: desk / check-in (VN + EN)
-    clickVisibleButtons(deskWords)
-    local p = nearestPrompt(deskWords, 14)
-    if not p then
-        -- fallback: nearest prompt at desk area
-        p = nearestPrompt(nil, 8)
-    end
-    if p and firePrompt(p) then
-        lastPrompt = os.clock()
-        return
-    end
-
-    -- Priority 2: emergency
-    p = nearestPrompt(emergencyWords, 40)
-    if p and firePrompt(p) then
-        lastPrompt = os.clock()
-        return
-    end
-
-    -- Priority 3: heal + coffee + buy nearby
-    useHealTool()
-    p = nearestPrompt(coffeeWords, 12)
-    if p and firePrompt(p) then
-        lastPrompt = os.clock()
-        return
-    end
-
-    p = nearestPrompt({ "buy", "shop", "mua", "cua hang", "cửa hàng", "store" }, 12)
-    if p and firePrompt(p) then
-        lastPrompt = os.clock()
-    end
-end
-
 local function setBoost(on)
     local h = hum()
     if not h then return end
-    if on then
-        h.WalkSpeed = 22
-        h.JumpPower = 50
-    else
-        h.WalkSpeed = 16
-        h.JumpPower = 50
+    h.WalkSpeed = on and 22 or 16
+    h.JumpPower = on and 50 or 50
+end
+
+local function mainStep()
+    if os.clock() - lastAct < cfg.actionCooldown then return end
+
+    -- 1) Desk GUI cycle (photo -> camera -> admit) like premium scripts
+    if deskGuiCycle() then
+        lastAct = os.clock()
+        return
+    end
+
+    -- 2) Instant prompts at desk
+    local p = nearestPrompt(cfg.deskRange, promptGroups.desk)
+    if p and firePrompt(p) then
+        lastAct = os.clock()
+        return
+    end
+
+    -- 3) Emergency first if detected nearby
+    if tryPrompts(cfg.emergencyRange, promptGroups.emergency) then
+        lastAct = os.clock()
+        return
+    end
+
+    -- 4) Self sustain
+    useHealItems()
+    if nearestPrompt(cfg.interactRange, promptGroups.coffee) and firePrompt(nearestPrompt(cfg.interactRange, promptGroups.coffee)) then
+        lastAct = os.clock()
+        return
+    end
+
+  -- 5) Buy supplies when near shop prompts
+    p = nearestPrompt(cfg.interactRange, promptGroups.buy)
+    if p and firePrompt(p) then
+        lastAct = os.clock()
     end
 end
 
@@ -287,8 +330,8 @@ local function start()
     lowGfxOnce()
     task.spawn(function()
         while ON do
-            pcall(loopStep)
-            task.wait(0.2)
+            pcall(mainStep)
+            task.wait(cfg.loopDelay)
         end
     end)
 end
@@ -299,8 +342,9 @@ local function stop()
     setBoost(false)
 end
 
--- UI
-local oldGui = LP.PlayerGui:FindFirstChild("AH_Night100_UI")
+-- UI (always create)
+local pg = LP:WaitForChild("PlayerGui")
+local oldGui = pg:FindFirstChild("AH_Night100_UI")
 if oldGui then oldGui:Destroy() end
 
 local gui = Instance.new("ScreenGui")
@@ -308,12 +352,12 @@ gui.Name = "AH_Night100_UI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.Sibling
-gui.Parent = LP:WaitForChild("PlayerGui")
+gui.Parent = pg
 
 local btn = Instance.new("TextButton")
-btn.Size = UDim2.new(0, 170, 0, 52)
-btn.Position = UDim2.new(0, 20, 0.5, -26)
-btn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+btn.Size = UDim2.new(0, 180, 0, 54)
+btn.Position = UDim2.new(0, 20, 0.5, -27)
+btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 btn.TextColor3 = Color3.new(1, 1, 1)
 btn.Font = Enum.Font.GothamBold
 btn.TextSize = 16
@@ -347,13 +391,13 @@ end)
 btn.MouseButton1Click:Connect(function()
     ON = not ON
     btn.Text = ON and "AH: ON" or "AH: OFF"
-    btn.BackgroundColor3 = ON and Color3.fromRGB(34, 145, 65) or Color3.fromRGB(45, 45, 45)
+    btn.BackgroundColor3 = ON and Color3.fromRGB(34, 145, 65) or Color3.fromRGB(40, 40, 40)
     if ON then
         start()
-        log("Da bat")
+        log("Pro mode ON")
     else
         stop()
-        log("Da tat")
+        log("Pro mode OFF")
     end
 end)
 
@@ -362,4 +406,4 @@ LP.CharacterAdded:Connect(function()
     if ON then setBoost(true) end
 end)
 
-log("Load OK - bam AH de bat")
+log("AH Night100 Pro loaded")
