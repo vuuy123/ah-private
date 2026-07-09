@@ -1,12 +1,19 @@
--- AH Night100 v3 - instant prompt hook + desk auto (Opiumware/Mac)
+-- Vuuy Private - Animal Hospital auto (Opiumware/Mac)
+
+local BRAND = "Vuuy Private"
+local BRAND_SUB = "by vuuy · ah-private"
+local GUI_NAME = "VuuyPrivate_UI"
 
 local G = (typeof(getgenv) == "function" and getgenv()) or _G
 pcall(function()
     local pg = game:GetService("Players").LocalPlayer.PlayerGui
-    local old = pg:FindFirstChild("AH_Night100_UI")
-    if old then old:Destroy() end
+    for _, child in ipairs(pg:GetChildren()) do
+        if child:IsA("ScreenGui") and (child.Name == GUI_NAME or child.Name == "AH_Night100_UI") then
+            child:Destroy()
+        end
+    end
 end)
-G.AH_NIGHT100_V3 = true
+G.VUUY_PRIVATE_AH = true
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -34,6 +41,12 @@ local lastAct = 0
 local deskStep = 1
 local gfxDone = false
 local statusText = "loaded"
+
+local xraySeq = {}
+local xrayLastFlash = 0
+local xrayPhase = "idle"
+local xrayLit = {}
+local xrayBtns = {}
 
 local cfg = {
     loopDelay = 0.12,
@@ -70,17 +83,29 @@ local promptHeal = { "med", "medicine", "bandage", "heal", "potion", "pill", "oi
 local promptBuy = { "buy", "shop", "purchase", "store", "vendor", "mua", "cua hang", "cửa hàng" }
 local promptEmergency = { "fire", "burn", "extinguish", "faint", "unconscious", "revive", "carry", "rescue", "ritual", "candle", "extinguisher", "bed", "syrup", "maple", "lua", "lửa", "chay", "cháy", "ngat", "ngất", "cuu", "cứu" }
 
+local promptXray = {
+    "xray", "x-ray", "xray", "x quang", "x-quang", "quang", "chup x", "chụp x",
+    "bone", "scan", "radiation", "sequence", "console", "panel", "button", "operate",
+    "may chup", "máy chụp", "room6", "room 6",
+}
+
+local promptTreat = {
+    "treat", "heal", "med", "medicine", "bandage", "inject", "give", "administer",
+    "thuoc", "thuốc", "chua", "chữa", "tiem", "tiêm", "cho thuoc", "cho thuốc",
+}
+
 local remoteWords = {
     "check", "admit", "register", "patient", "reception", "desk", "front", "nurse",
     "photo", "camera", "cctv", "shutter", "stamp", "secretary", "coffee", "sanity",
     "notify", "deliver", "emergency", "fire", "revive", "carry", "treat", "heal",
     "shift", "work", "job", "dna", "analy", "monitor", "portal", "door",
+    "xray", "x-ray", "bone", "scan", "sequence", "color", "heart", "surgery",
 }
 
 local function log(msg)
-    print("[AH]", msg)
+    print("[" .. BRAND .. "]", msg)
     pcall(function()
-        StarterGui:SetCore("SendNotification", { Title = "AH Night100", Text = tostring(msg), Duration = 2 })
+        StarterGui:SetCore("SendNotification", { Title = BRAND, Text = tostring(msg), Duration = 2 })
     end)
 end
 
@@ -321,7 +346,7 @@ local function clickGuiByWords(words)
     local pg = LP:FindFirstChild("PlayerGui")
     if not pg then return false end
     local clicked = false
-    local ourGui = pg:FindFirstChild("AH_Night100_UI")
+    local ourGui = pg:FindFirstChild(GUI_NAME)
     for _, g in ipairs(pg:GetDescendants()) do
         if (g:IsA("TextButton") or g:IsA("ImageButton")) and isGuiShown(g) then
             if not (ourGui and g:IsDescendantOf(ourGui)) then
@@ -342,6 +367,132 @@ local function deskGuiCycle()
         deskStep = deskStep % #deskGuiSteps + 1
         return true
     end
+    return false
+end
+
+local function colorId(c)
+    if c.R > 0.65 and c.G < 0.45 and c.B < 0.45 then return "red" end
+    if c.G > 0.45 and c.R < 0.45 and c.B < 0.5 then return "green" end
+    if c.B > 0.45 and c.R < 0.35 then return "blue" end
+    if c.R > 0.65 and c.G > 0.45 and c.B < 0.35 then return "orange" end
+    if c.R > 0.55 and c.G < 0.45 and c.B > 0.45 then return "pink" end
+    if c.G > 0.45 and c.B > 0.5 and c.R < 0.45 then return "cyan" end
+    return nil
+end
+
+local function isInXrayRoom()
+    local r = root()
+    if not r then return false end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("TextLabel") then
+            local t = lower(obj.Text)
+            if hasAny(t, { "chup x", "chụp x", "x-quang", "x quang", "x-ray", "xray" }) then
+                local part = obj:FindFirstAncestorWhichIsA("BasePart")
+                if part and dist(part) < 45 then return true end
+            end
+        elseif obj:IsA("BasePart") and dist(obj) < 28 then
+            local t = lower(obj.Name .. "|" .. obj:GetFullName())
+            if hasAny(t, { "xray", "x-ray", "xrayroom", "room6", "x_quang", "xquang" }) then
+                return true
+            end
+        end
+    end
+    local colored = 0
+    for _, p in ipairs(workspace:GetDescendants()) do
+        if p:IsA("BasePart") and dist(p) < 16 and colorId(p.Color) then
+            if p:FindFirstChildWhichIsA("ClickDetector") then
+                colored = colored + 1
+            end
+        end
+    end
+    return colored >= 3
+end
+
+local function clickPart(part)
+    if not part or not part:IsA("BasePart") then return false end
+    local cd = part:FindFirstChildWhichIsA("ClickDetector")
+    if cd then
+        pcall(function()
+            if typeof(fireclickdetector) == "function" then
+                fireclickdetector(cd, 0)
+            end
+            fireSignal(cd.MouseClick)
+        end)
+        return true
+    end
+    for _, ch in ipairs(part:GetChildren()) do
+        if ch:IsA("ProximityPrompt") and firePrompt(ch) then return true end
+    end
+    return false
+end
+
+local function collectXrayButtons()
+    xrayBtns = {}
+    for _, p in ipairs(workspace:GetDescendants()) do
+        if p:IsA("BasePart") and dist(p) < 16 then
+            local id = colorId(p.Color)
+            if id and p:FindFirstChildWhichIsA("ClickDetector") then
+                table.insert(xrayBtns, { part = p, id = id })
+            end
+        end
+    end
+end
+
+local function partLit(part)
+    local hl = part:FindFirstChildOfClass("Highlight")
+    if hl and hl.Enabled then return true end
+    local pl = part:FindFirstChildOfClass("PointLight")
+    if pl and pl.Enabled and pl.Brightness > 0.25 then return true end
+    if part.Material == Enum.Material.Neon then return true end
+    local sel = part:FindFirstChildOfClass("SelectionBox")
+    if sel and sel.Visible then return true end
+    return false
+end
+
+local function xrayStep()
+    if not isInXrayRoom() then
+        xraySeq = {}
+        xrayPhase = "idle"
+        xrayLit = {}
+        return false
+    end
+
+    collectXrayButtons()
+
+    for _, b in ipairs(xrayBtns) do
+        local lit = partLit(b.part)
+        local was = xrayLit[b.part]
+        if lit and not was then
+            table.insert(xraySeq, b.part)
+            xrayLastFlash = os.clock()
+            xrayPhase = "record"
+        end
+        xrayLit[b.part] = lit
+    end
+
+    if xrayPhase == "record" and #xraySeq > 0 and os.clock() - xrayLastFlash > 1.05 then
+        xrayPhase = "play"
+        local seq = xraySeq
+        xraySeq = {}
+        task.spawn(function()
+            for _, part in ipairs(seq) do
+                if part.Parent then clickPart(part) end
+                task.wait(0.38)
+            end
+            xrayPhase = "idle"
+            xrayLit = {}
+        end)
+        return true
+    end
+
+    local p = nearestPrompt(18, promptXray)
+    if p and firePrompt(p) then return true end
+
+    if clickGuiByWords(promptXray) then return true end
+
+    p = nearestPrompt(14, promptTreat)
+    if p and firePrompt(p) then return true end
+
     return false
 end
 
@@ -425,6 +576,21 @@ local function mainStep()
 
     refreshPromptCache()
     setStatus(string.format("P:%d R:%d", #promptCache, #remotes))
+
+    if isInXrayRoom() then
+        if xrayStep() then
+            lastAct = os.clock()
+            setStatus("X-Quang seq:" .. #xraySeq)
+            return
+        end
+        useHealItems()
+        local p = nearestPrompt(cfg.interactRange, promptTreat)
+        if p and firePrompt(p) then
+            lastAct = os.clock()
+            setStatus("X-Quang treat")
+            return
+        end
+    end
 
     -- Desk: GUI buttons (photo/camera/admit/shutter)
     if deskGuiCycle() then
@@ -511,7 +677,7 @@ end
 -- UI (ESC / RightControl opens menu + frees mouse for T1)
 local pg = LP:WaitForChild("PlayerGui")
 local gui = Instance.new("ScreenGui")
-gui.Name = "AH_Night100_UI"
+gui.Name = GUI_NAME
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.Sibling
@@ -554,7 +720,7 @@ hint.BackgroundTransparency = 0.35
 hint.TextColor3 = Color3.fromRGB(220, 220, 220)
 hint.Font = Enum.Font.Gotham
 hint.TextSize = 12
-hint.Text = "ESC / RCtrl = Menu  |  F6 = ON/OFF"
+hint.Text = BRAND .. " | ESC/RCtrl Menu | F6 ON/OFF"
 hint.Parent = gui
 Instance.new("UICorner", hint).CornerRadius = UDim.new(0, 6)
 
@@ -571,9 +737,9 @@ overlay.Parent = gui
 
 local panel = Instance.new("Frame")
 panel.Name = "Panel"
-panel.Size = UDim2.new(0, 300, 0, 220)
-panel.Position = UDim2.new(0.5, -150, 0.5, -110)
-panel.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+panel.Size = UDim2.new(0, 310, 0, 248)
+panel.Position = UDim2.new(0.5, -155, 0.5, -124)
+panel.BackgroundColor3 = Color3.fromRGB(22, 26, 38)
 panel.BorderSizePixel = 0
 panel.Visible = false
 panel.ZIndex = 2
@@ -585,8 +751,8 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -20, 0, 36)
 title.Position = UDim2.new(0, 10, 0, 8)
 title.BackgroundTransparency = 1
-title.Text = "AH Night100"
-title.TextColor3 = Color3.new(1, 1, 1)
+title.Text = BRAND
+title.TextColor3 = Color3.fromRGB(130, 200, 255)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 18
 title.ZIndex = 3
@@ -594,19 +760,31 @@ title.Parent = panel
 
 local sub = Instance.new("TextLabel")
 sub.Size = UDim2.new(1, -20, 0, 40)
-sub.Position = UDim2.new(0, 10, 0, 44)
+sub.Position = UDim2.new(0, 10, 0, 40)
 sub.BackgroundTransparency = 1
 sub.TextColor3 = Color3.fromRGB(170, 170, 170)
 sub.Font = Enum.Font.Gotham
-sub.TextSize = 12
+sub.TextSize = 11
 sub.TextWrapped = true
-sub.Text = "v3 ready"
+sub.Text = BRAND_SUB
 sub.ZIndex = 3
 sub.Parent = panel
 
+local note = Instance.new("TextLabel")
+note.Size = UDim2.new(1, -20, 0, 28)
+note.Position = UDim2.new(0, 10, 0, 72)
+note.BackgroundTransparency = 1
+note.TextColor3 = Color3.fromRGB(140, 140, 150)
+note.Font = Enum.Font.Gotham
+note.TextSize = 10
+note.TextWrapped = true
+note.Text = "Tắt Foxname Hub nếu đang chạy hub khác"
+note.ZIndex = 3
+note.Parent = panel
+
 local btn = Instance.new("TextButton")
 btn.Size = UDim2.new(1, -40, 0, 52)
-btn.Position = UDim2.new(0, 20, 0, 100)
+btn.Position = UDim2.new(0, 20, 0, 108)
 btn.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
 btn.TextColor3 = Color3.new(1, 1, 1)
 btn.Font = Enum.Font.GothamBold
@@ -618,7 +796,7 @@ Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
 
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(1, -40, 0, 36)
-closeBtn.Position = UDim2.new(0, 20, 0, 164)
+closeBtn.Position = UDim2.new(0, 20, 0, 192)
 closeBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
 closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 closeBtn.Font = Enum.Font.Gotham
@@ -630,7 +808,7 @@ Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
 task.spawn(function()
     while gui.Parent do
-        sub.Text = statusText .. "\nF6 bật/tắt nhanh không cần chuột"
+        sub.Text = statusText .. "\n" .. BRAND_SUB .. "\nF6 = bật/tắt nhanh"
         task.wait(0.25)
     end
 end)
@@ -668,5 +846,5 @@ LP.CharacterAdded:Connect(function()
 end)
 
 scanRemotes()
-setStatus("v3 | R:" .. #remotes)
-log("AH v3 loaded")
+setStatus(BRAND .. " | R:" .. #remotes)
+log(BRAND .. " loaded")
