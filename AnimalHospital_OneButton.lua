@@ -52,6 +52,10 @@ local xrayInRoom = false
 local xrayRoomAt = 0
 local xrayCollectAt = 0
 
+local roomType = "none"
+local roomAt = 0
+local heartBusy = false
+
 local cfg = {
     loopDelay = 0.12,
     cacheRefresh = 1.8,
@@ -59,10 +63,12 @@ local cfg = {
     deskRange = 18,
     nearRange = 10,
     interactRange = 14,
+    treatRange = 16,
     emergencyRange = 50,
     remoteCooldown = 1.8,
     xraySilence = 2.4,
     xrayClickGap = 0.42,
+    heartClickGap = 0.14,
     autoStart = true,
 }
 
@@ -99,6 +105,39 @@ local promptXray = {
 local promptTreat = {
     "treat", "heal", "med", "medicine", "bandage", "inject", "give", "administer",
     "thuoc", "thuốc", "chua", "chữa", "tiem", "tiêm", "cho thuoc", "cho thuốc",
+    "patient", "benh nhan", "bệnh nhân", "use on", "apply", "duong", "đường",
+}
+
+local promptDna = {
+    "dna", "analy", "analyze", "analysis", "sample", "test", "lab", "sequence",
+    "phan tich", "phân tích", "xet nghiem", "xét nghiệm", "lay mau", "lấy mẫu",
+    "kiem tra", "kiểm tra", "may phan tich", "máy phân tích",
+}
+
+local promptHeart = {
+    "heart", "monitor", "ecg", "ekg", "pulse", "vitals", "cardiac",
+    "tim", "máy tim", "may tim", "nhip tim", "nhịp tim", "mach tim", "mạch tim",
+    "room7", "room 7", "heartgame", "heart rate",
+}
+
+local promptSurgery = {
+    "surgery", "operate", "operation", "scalpel", "scissor", "stitch", "suture",
+    "clamp", "forceps", "tool", "cut", "sew", "begin", "start",
+    "phau thuat", "phẫu thuật", "mo", "mổ", "keo", "kéo", "dao", "khau",
+    "room8", "room 8", "surgeon",
+}
+
+local promptPatientItem = {
+    "bandage", "pill", "syringe", "inject", "medicine", "ointment", "cream", "syrup",
+    "antibiotic", "painkiller", "vitamin", "tablet", "capsule", "spray", "drop",
+    "thuoc", "thuốc", "bang", "băng", "tiem", "tiêm", "kem", "vien", "viên",
+    "ong tiem", "ống tiêm", "thuoc bo", "thuốc bôi",
+}
+
+local promptBasicRoom = {
+    "dna", "medical", "treatment", "room1", "room2", "room3", "room4", "room5",
+    "phong dieu tri", "phòng điều trị", "phong 1", "phong 2", "phong 3", "phong 4", "phong 5",
+    "canh phai", "cánh phải",
 }
 
 local remoteWords = {
@@ -107,6 +146,7 @@ local remoteWords = {
     "notify", "deliver", "emergency", "fire", "revive", "carry", "treat", "heal",
     "shift", "work", "job", "dna", "analy", "monitor", "portal", "door",
     "xray", "x-ray", "bone", "scan", "sequence", "color", "heart", "surgery",
+    "dna", "analy", "operate", "scalpel", "inject", "medicine", "item", "tool",
 }
 
 local function log(msg)
@@ -333,16 +373,19 @@ end
 local function tryClickDetectors(maxRange)
     local r = root()
     if not r then return false end
+    local skipSkull = detectRoom() == "heart"
     for _, obj in ipairs(workspace:GetDescendants()) do
         if obj:IsA("ClickDetector") and obj.Parent and obj.Parent:IsA("BasePart") then
-            if dist(obj.Parent) <= maxRange then
-                pcall(function()
-                    fireSignal(obj.MouseClick)
-                    if fireclickdetector and typeof(fireclickdetector) == "function" then
-                        fireclickdetector(obj, 0)
-                    end
-                end)
-                return true
+            if not (skipSkull and isSkullTarget(obj.Parent)) then
+                if dist(obj.Parent) <= maxRange then
+                    pcall(function()
+                        fireSignal(obj.MouseClick)
+                        if fireclickdetector and typeof(fireclickdetector) == "function" then
+                            fireclickdetector(obj, 0)
+                        end
+                    end)
+                    return true
+                end
             end
         end
     end
@@ -392,50 +435,306 @@ local function btnBright(c)
     return (c.R + c.G + c.B) / 3
 end
 
-local function isInXrayRoom(force)
-    if not force and os.clock() - xrayRoomAt < 1.2 then return xrayInRoom end
-    xrayRoomAt = os.clock()
+local function detectRoom(force)
+    if not force and os.clock() - roomAt < 1.0 then return roomType end
+    roomAt = os.clock()
     local r = root()
     if not r then
+        roomType = "none"
         xrayInRoom = false
-        return false
+        return roomType
     end
-    local found = false
+
+    local found = "none"
     for _, obj in ipairs(workspace:GetDescendants()) do
         if obj:IsA("TextLabel") or obj:IsA("TextButton") then
             local t = lower(obj.Text)
-            if hasAny(t, { "chup x", "chụp x", "x-quang", "x quang", "x-ray", "xray", "chup x quang", "chụp x quang" }) then
-                local part = obj:FindFirstAncestorWhichIsA("BasePart")
-                if part and dist(part) < 50 then
-                    found = true
+            local part = obj:FindFirstAncestorWhichIsA("BasePart")
+            local d = part and dist(part) or math.huge
+            if d < 50 then
+                if hasAny(t, { "phau thuat", "phẫu thuật", "surgery", "room 8", "room8", "phong mo", "phòng mổ" }) then
+                    found = "surgery"
                     break
+                elseif hasAny(t, { "tim", "heart", "monitor", "ecg", "máy tim", "may tim", "room 7", "room7", "nhip tim", "nhịp tim" }) then
+                    found = "heart"
+                    break
+                elseif hasAny(t, { "chup x", "chụp x", "x-quang", "x quang", "x-ray", "xray", "chup x quang", "chụp x quang" }) then
+                    found = "xray"
+                    break
+                elseif hasAny(t, { "dna", "phan tich", "phân tích", "xet nghiem", "xét nghiệm", "room 1", "room 2", "room 3", "room 4", "room 5" }) then
+                    found = "basic"
                 end
             end
-        elseif obj:IsA("BasePart") and dist(obj) < 30 then
+        elseif obj:IsA("BasePart") and dist(obj) < 32 then
             local t = lower(obj.Name .. "|" .. obj:GetFullName())
-            if hasAny(t, { "xray", "x-ray", "xrayroom", "room6", "x_quang", "xquang" }) then
-                found = true
+            if hasAny(t, { "surgery", "surgeon", "room8", "scalpel" }) then
+                found = "surgery"
                 break
+            elseif hasAny(t, { "heart", "ecg", "ekg", "heartmonitor", "room7" }) then
+                found = "heart"
+                break
+            elseif hasAny(t, { "xray", "x-ray", "xrayroom", "room6", "x_quang", "xquang" }) then
+                found = "xray"
+                break
+            elseif hasAny(t, { "dna", "analyzer", "basicmed", "room1", "room2", "room3", "room4", "room5" }) then
+                found = "basic"
             end
         end
     end
-    if not found then
+
+    if found == "none" then
         local colored = 0
         for _, p in ipairs(workspace:GetDescendants()) do
             if p:IsA("BasePart") and dist(p) < 18 and colorId(p.Color) then
                 colored = colored + 1
                 if colored >= 4 then
-                    found = true
+                    found = "xray"
                     break
                 end
             end
         end
     end
-    if not found then
+
+    if found == "none" then
+        local bedNear = false
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and dist(obj) < 14 then
+                local t = lower(obj.Name)
+                if hasAny(t, { "bed", "giuong", "giường", "patient", "danalyzer", "machine" }) then
+                    bedNear = true
+                    break
+                end
+            end
+        end
+        if bedNear then found = "basic" end
+    end
+
+    if found ~= "xray" then
         xrayBase = {}
     end
-    xrayInRoom = found
+    roomType = found
+    xrayInRoom = (found == "xray")
+    xrayRoomAt = os.clock()
     return found
+end
+
+local function isInXrayRoom(force)
+    return detectRoom(force) == "xray"
+end
+
+local function isInTreatmentRoom()
+    return detectRoom() ~= "none"
+end
+
+local function isSkullTarget(g)
+    if not g then return false end
+    local label = guiLabel(g)
+    if hasAny(label, { "skull", "death", "danger", "so", "sọ", "dead" }) then return true end
+    if g:IsA("GuiObject") then
+        local c = g.BackgroundColor3
+        if c.R > 0.55 and c.G < 0.28 and c.B < 0.28 then return true end
+        if g:IsA("ImageLabel") or g:IsA("ImageButton") then
+            local ic = g.ImageColor3
+            if ic.R > 0.55 and ic.G < 0.28 and ic.B < 0.28 then return true end
+        end
+    end
+    if g:IsA("BasePart") then
+        local c = g.Color
+        if c.R > 0.55 and c.G < 0.25 and c.B < 0.25 then return true end
+        if hasAny(lower(g.Name), { "skull", "death", "danger" }) then return true end
+    end
+    return false
+end
+
+local function isWhiteHeartTarget(g)
+    if g:IsA("BasePart") then
+        if isSkullTarget(g) then return false end
+        if dist(g) > 22 then return false end
+        return btnBright(g.Color) > 0.72
+    end
+    if not g:IsA("GuiObject") or not isGuiShown(g) then return false end
+    if isSkullTarget(g) then return false end
+    if not (g:IsA("ImageButton") or g:IsA("TextButton") or g:IsA("ImageLabel")) then return false end
+    local bright = btnBright(g.BackgroundColor3)
+    if bright > 0.72 and g.BackgroundTransparency < 0.55 then return true end
+    if g:IsA("ImageLabel") or g:IsA("ImageButton") then
+        if g.ImageTransparency < 0.45 and btnBright(g.ImageColor3) > 0.65 then return true end
+    end
+    return false
+end
+
+local function clickGameGui(words, skipSkull)
+    local pg = LP:FindFirstChild("PlayerGui")
+    if not pg then return false end
+    local ourGui = pg:FindFirstChild(GUI_NAME)
+    local best, bestScore = nil, 0
+    local pools = { pg:GetDescendants() }
+    for _, g in ipairs(workspace:GetDescendants()) do
+        if g:IsA("BillboardGui") or g:IsA("SurfaceGui") then
+            for _, ch in ipairs(g:GetDescendants()) do
+                if ch:IsA("GuiObject") then
+                    table.insert(pools[1], ch)
+                end
+            end
+        end
+    end
+    for _, g in ipairs(pools[1]) do
+        if (g:IsA("TextButton") or g:IsA("ImageButton")) and isGuiShown(g) then
+            if not (ourGui and g:IsDescendantOf(ourGui)) and not (skipSkull and isSkullTarget(g)) then
+                local label = guiLabel(g)
+                local score = g.ZIndex
+                if words and hasAny(label, words) then score = score + 120 end
+                if g.Size.X.Offset > 20 or g.Size.X.Scale > 0.03 then score = score + 10 end
+                if score > bestScore then
+                    best, bestScore = g, score
+                end
+            end
+        end
+    end
+    if best then
+        fireSignal(best.MouseButton1Click)
+        fireSignal(best.Activated)
+        return true
+    end
+    return false
+end
+
+local function usePatientTools()
+    local h = hum()
+    if not h then return false end
+    local function tryGive(t)
+        if t:IsA("Tool") and hasAny(t.Name, promptPatientItem) then
+            pcall(function()
+                h:EquipTool(t)
+                t:Activate()
+            end)
+            return true
+        end
+        return false
+    end
+    local char = LP.Character
+    if char then
+        for _, t in ipairs(char:GetChildren()) do
+            if tryGive(t) then return true end
+        end
+    end
+    for _, t in ipairs(LP.Backpack:GetChildren()) do
+        if tryGive(t) then return true end
+    end
+    return false
+end
+
+local function treatPatientStep()
+    local p = nearestPrompt(cfg.treatRange, promptTreat)
+    if p and firePrompt(p) then return true end
+
+    p = nearestPrompt(cfg.treatRange, promptPatientItem)
+    if p and firePrompt(p) then return true end
+
+    if usePatientTools() then return true end
+    if clickGameGui(promptTreat, true) then return true end
+
+    if fireNearestAny(cfg.nearRange) then return true end
+    return false
+end
+
+local function basicMedicalStep()
+    local p = nearestPrompt(cfg.treatRange, promptDna)
+    if p and firePrompt(p) then return true end
+
+    if clickGameGui(promptDna, true) then return true end
+    if tryRemotes({ "dna", "analy", "sample", "test" }) then return true end
+
+    if treatPatientStep() then return true end
+    return false
+end
+
+local function heartClickTargets()
+    if heartBusy then return true end
+    local pg = LP:FindFirstChild("PlayerGui")
+    local ourGui = pg and pg:FindFirstChild(GUI_NAME)
+    local targets = {}
+    if pg then
+        for _, g in ipairs(pg:GetDescendants()) do
+            if isWhiteHeartTarget(g) and not (ourGui and g:IsDescendantOf(ourGui)) then
+                table.insert(targets, g)
+            end
+        end
+    end
+    for _, g in ipairs(workspace:GetDescendants()) do
+        if g:IsA("BasePart") and isWhiteHeartTarget(g) then
+            table.insert(targets, g)
+        end
+    end
+    if #targets == 0 then return false end
+    heartBusy = true
+    task.spawn(function()
+        for _, t in ipairs(targets) do
+            if t:IsA("BasePart") then
+                clickPart(t)
+            else
+                fireSignal(t.MouseButton1Click)
+                fireSignal(t.Activated)
+            end
+            task.wait(cfg.heartClickGap)
+        end
+        heartBusy = false
+    end)
+    return true
+end
+
+local function heartStep()
+    if heartClickTargets() then return true end
+
+    local p = nearestPrompt(18, promptHeart)
+    if p and firePrompt(p) then return true end
+
+    if clickGameGui(promptHeart, true) then return true end
+    if tryRemotes({ "heart", "monitor", "ecg", "pulse", "vitals" }) then return true end
+
+    if treatPatientStep() then return true end
+    return false
+end
+
+local function surgeryStep()
+    if clickGameGui(promptSurgery, true) then return true end
+
+    local p = nearestPrompt(18, promptSurgery)
+    if p and firePrompt(p) then return true end
+
+    if tryRemotes({ "surgery", "operate", "scalpel", "stitch", "tool" }) then return true end
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and dist(obj) < 14 and not isSkullTarget(obj) then
+            local t = lower(obj.Name)
+            if hasAny(t, promptSurgery) then
+                if clickPart(obj) then return true end
+            end
+        end
+    end
+
+    if treatPatientStep() then return true end
+    if clickGameGui(nil, true) then return true end
+    return false
+end
+
+local function treatmentRoomStep()
+    local room = detectRoom()
+    if room == "none" then return false end
+
+    if room == "surgery" then
+        if surgeryStep() then return true, "Surgery" end
+    elseif room == "heart" then
+        if heartStep() then return true, "Tim" end
+    elseif room == "xray" then
+        if xrayStep() then return true, "X-Quang" end
+        if treatPatientStep() then return true, "X-Quang thuoc" end
+    elseif room == "basic" then
+        if basicMedicalStep() then return true, "Co ban" end
+    end
+
+    if treatPatientStep() then return true, "Dieu tri" end
+    return false, room
 end
 
 local function clickWorldPart(part)
@@ -663,19 +962,14 @@ local function mainStep()
     if os.clock() - lastAct < cfg.actionCooldown then return end
 
     refreshPromptCache()
-    setStatus(string.format("P:%d R:%d", #promptCache, #remotes))
+    local room = detectRoom()
+    setStatus(string.format("%s P:%d R:%d", room, #promptCache, #remotes))
 
-    if isInXrayRoom() then
-        if xrayStep() then
+    if room ~= "none" then
+        local ok, tag = treatmentRoomStep()
+        if ok then
             lastAct = os.clock()
-            setStatus("X-Quang seq:" .. #xraySeq)
-            return
-        end
-        useHealItems()
-        local p = nearestPrompt(cfg.interactRange, promptTreat)
-        if p and firePrompt(p) then
-            lastAct = os.clock()
-            setStatus("X-Quang treat")
+            setStatus(tag or room)
             return
         end
     end
@@ -719,6 +1013,12 @@ local function mainStep()
     end
 
     useHealItems()
+
+    if isInTreatmentRoom() and treatPatientStep() then
+        lastAct = os.clock()
+        setStatus("Thuoc")
+        return
+    end
 
     p = nearestPrompt(cfg.interactRange, promptCoffee)
     if p and firePrompt(p) then
@@ -866,7 +1166,7 @@ note.TextColor3 = Color3.fromRGB(140, 140, 150)
 note.Font = Enum.Font.Gotham
 note.TextSize = 10
 note.TextWrapped = true
-note.Text = "Tắt Foxname Hub nếu đang chạy hub khác"
+note.Text = "Auto tat ca phong: 1-5 DNA | 6 XQuang | 7 Tim | 8 Mo"
 note.ZIndex = 3
 note.Parent = panel
 
