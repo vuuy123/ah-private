@@ -68,30 +68,32 @@ local lastRemoteScan = 0
 local lastAfkPulse = 0
 local lastSanityAct = 0
 local sessionStart = os.clock()
+local farmGen = 0
+local stepTicks = 0
 
 local cfg = {
-    loopDelay = 0.12,
-    cacheRefresh = 1.8,
-    actionCooldown = 0.22,
-    deskRange = 18,
-    nearRange = 10,
-    interactRange = 14,
+    loopDelay = 0.1,
+    cacheRefresh = 1.2,
+    actionCooldown = 0.18,
+    deskRange = 22,
+    nearRange = 14,
+    interactRange = 16,
     treatRange = 16,
     emergencyRange = 50,
-    remoteCooldown = 1.8,
+    remoteCooldown = 1.4,
     xraySilence = 2.4,
     xrayClickGap = 0.42,
     heartClickGap = 0.14,
     autoStart = true,
     shiftGoal = 100,
-    sanityCoffeeBelow = 58,
-    sanityEmergencyBelow = 34,
-    sanityProactiveBelow = 78,
+    sanityCoffeeBelow = 48,
+    sanityEmergencyBelow = 28,
+    sanityProactiveBelow = 40,
     sanityCoffeeCooldown = 8,
     afkPulseSec = 50,
     remoteRescanSec = 40,
-    stuckResetSec = 26,
-    walkSanityBelow = 36,
+    stuckResetSec = 20,
+    walkSanityBelow = 22,
 }
 
 local lastRemote = {}
@@ -286,9 +288,8 @@ end
 
 local function sanityMaintainStep()
     readHudStats()
-    if sanityPct >= cfg.sanityCoffeeBelow and sanityPct >= cfg.sanityProactiveBelow then
-        return false
-    end
+    if isAtDesk() and sanityPct >= 32 then return false end
+    if sanityPct >= cfg.sanityCoffeeBelow then return false end
 
     if consumeSanityTools() then return true end
 
@@ -298,14 +299,14 @@ local function sanityMaintainStep()
     end
 
     local p = nearestPrompt(28, promptCoffee)
-    if p and firePrompt(p) then
+    if p and firePromptWalk(p) then
         lastSanityAct = os.clock()
         return true
     end
 
     if sanityPct < cfg.sanityEmergencyBelow then
         p = nearestPrompt(28, promptChocolate)
-        if p and firePrompt(p) then
+        if p and firePromptWalk(p) then
             lastSanityAct = os.clock()
             return true
         end
@@ -313,11 +314,9 @@ local function sanityMaintainStep()
             lastSanityAct = os.clock()
             return true
         end
-    end
-
-    if sanityPct < cfg.walkSanityBelow then
-        if moveTowardPrompt(promptCoffee, 80) then return true end
-        if moveTowardPrompt(promptChocolate, 80) then return true end
+        if sanityPct < cfg.walkSanityBelow then
+            if moveTowardPrompt(promptCoffee, 80) then return true end
+        end
     end
 
     return false
@@ -475,16 +474,14 @@ local function firePrompt(p)
 
     pcall(function()
         p.RequiresLineOfSight = false
-        if p.MaxActivationDistance < 20 then
-            p.MaxActivationDistance = 20
-        end
+        p.MaxActivationDistance = math.max(p.MaxActivationDistance or 0, 24)
+        p.HoldDuration = 0
     end)
 
     if hasFirePrompt then
         local ok = pcall(function()
             fireproximityprompt(p, 0)
-            local hold = p.HoldDuration or 0
-            if hold > 0 then task.wait(hold + 0.03) end
+            task.wait(0.05)
             fireproximityprompt(p, 1)
         end)
         if ok then return true end
@@ -492,14 +489,77 @@ local function firePrompt(p)
 
     local ok2 = pcall(function()
         p:InputHoldBegin()
-        local hold = p.HoldDuration or 0
-        if hold > 0 then task.wait(hold + 0.03) else task.wait(0.08) end
+        task.wait(0.1)
         p:InputHoldEnd()
     end)
     if ok2 then return true end
 
     pressE()
     return true
+end
+
+local function firePromptWalk(p)
+    local part = promptPart(p)
+    if part then
+        local d = dist(part)
+        if d > 5 and d < 40 then
+            local h = hum()
+            if h then pcall(function() h:MoveTo(part.Position) end) end
+        end
+    end
+    return firePrompt(p)
+end
+
+local function isAtDesk()
+    refreshPromptCache()
+    for _, item in ipairs(promptCache) do
+        if item.dist < 16 and hasAny(item.label, promptDesk) then
+            return true
+        end
+    end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+            local t = lower(obj.Text)
+            if hasAny(t, { "thu ky", "thư ký", "le tan", "lễ tân", "kiem tra dinh menh", "kiểm tra định mệnh", "ca lam viec", "ca làm việc" }) then
+                local part = obj:FindFirstAncestorWhichIsA("BasePart")
+                if part and dist(part) < 30 then return true end
+            end
+        end
+    end
+    return false
+end
+
+local function deskGuiBurst()
+    if not isAtDesk() then return false end
+    local pg = LP:FindFirstChild("PlayerGui")
+    if not pg then return false end
+    local clicked = false
+    for _, g in ipairs(pg:GetDescendants()) do
+        if (g:IsA("TextButton") or g:IsA("ImageButton")) and isGuiShown(g) and not isOurGuiElement(g) then
+            local w = g.AbsoluteSize.X
+            local h = g.AbsoluteSize.Y
+            if w < 1 then w = g.Size.X.Offset + g.Size.X.Scale * 100 end
+            if h < 1 then h = g.Size.Y.Offset + g.Size.Y.Scale * 100 end
+            if w > 28 and h > 20 then
+                fireSignal(g.MouseButton1Click)
+                fireSignal(g.Activated)
+                clicked = true
+            end
+        end
+    end
+    return clicked
+end
+
+local function deskStepAll()
+    if deskGuiCycle() then return true end
+    if deskGuiBurst() then return true end
+    if clickGuiByWords(promptDesk) then return true end
+    local p = nearestPrompt(cfg.deskRange, promptDesk)
+    if p and firePromptWalk(p) then return true end
+    p = nearestPrompt(cfg.nearRange, nil)
+    if p and firePromptWalk(p) then return true end
+    if fireNearestAny(cfg.nearRange) then return true end
+    return false
 end
 
 local function scanRemotes()
@@ -1161,7 +1221,7 @@ local function hookInstantPrompts()
     table.insert(conns, PPS.PromptShown:Connect(function(prompt)
         if not ON then return end
         task.defer(function()
-            pcall(function() firePrompt(prompt) end)
+            pcall(function() firePromptWalk(prompt) end)
         end)
     end))
 
@@ -1171,7 +1231,7 @@ local function hookInstantPrompts()
             task.defer(function()
                 task.wait(0.05)
                 if ON and obj.Parent then
-                    pcall(function() firePrompt(obj) end)
+                    pcall(function() firePromptWalk(obj) end)
                 end
             end)
         end
@@ -1180,22 +1240,29 @@ end
 
 local function mainStep()
     if os.clock() - lastAct < cfg.actionCooldown then return end
+    stepTicks = stepTicks + 1
 
     readHudStats()
     refreshPromptCache()
     local room = detectRoom()
+    local atDesk = isAtDesk()
 
-    -- Emergency first (shift 10+ monster waves)
     local p = nearestPrompt(cfg.emergencyRange, promptEmergency)
-    if p and firePrompt(p) then
+    if p and firePromptWalk(p) then
         lastAct = os.clock()
         setStatus(statusLine("KHAN CAP"))
         return
     end
 
-    if sanityMaintainStep() then
+    if sanityPct < 30 and sanityMaintainStep() then
         lastAct = os.clock()
         setStatus(statusLine("Coffee/SK"))
+        return
+    end
+
+    if atDesk and deskStepAll() then
+        lastAct = os.clock()
+        setStatus(statusLine("Le tan"))
         return
     end
 
@@ -1214,18 +1281,7 @@ local function mainStep()
         end
     end
 
-    -- Desk: GUI buttons (photo/camera/admit/shutter)
-    if deskGuiCycle() then
-        lastAct = os.clock()
-        setStatus(statusLine("Le tan"))
-        return
-    end
-
-    p = nearestPrompt(cfg.deskRange, promptDesk)
-    if not p then
-        p = nearestPrompt(cfg.nearRange, nil)
-    end
-    if p and firePrompt(p) then
+    if deskStepAll() then
         lastAct = os.clock()
         setStatus(statusLine("Desk"))
         return
@@ -1257,6 +1313,12 @@ local function mainStep()
         return
     end
 
+    if sanityMaintainStep() then
+        lastAct = os.clock()
+        setStatus(statusLine("SK"))
+        return
+    end
+
     if buySuppliesStep() then
         lastAct = os.clock()
         setStatus(statusLine("Mua do"))
@@ -1264,42 +1326,52 @@ local function mainStep()
     end
 
     p = nearestPrompt(cfg.interactRange, promptCoffee)
-    if p and firePrompt(p) then
+    if p and firePromptWalk(p) then
         lastAct = os.clock()
         setStatus(statusLine("Coffee"))
         return
     end
 
     p = nearestPrompt(cfg.interactRange, promptBuy)
-    if p and firePrompt(p) then
+    if p and firePromptWalk(p) then
         lastAct = os.clock()
         setStatus(statusLine("Shop"))
     else
-        setStatus(statusLine(room))
+        setStatus(statusLine((atDesk and "Cho desk" or room) .. " t:" .. stepTicks))
     end
 end
 
 local function start()
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    conns = {}
+    farmGen = farmGen + 1
+    local gen = farmGen
+
     scanRemotes()
     lastRemoteScan = os.clock()
     sessionStart = os.clock()
+    stepTicks = 0
+    lastAct = 0
     hookInstantPrompts()
+
     table.insert(conns, LP.Idled:Connect(function()
         pcall(function()
             VirtualUser:CaptureController()
             VirtualUser:ClickButton2(Vector2.new(0, 0))
         end)
     end))
+
     setBoost(true)
     lowGfxOnce()
+
     task.spawn(function()
-        while ON do
+        while ON and farmGen == gen do
             pcall(mainStep)
             task.wait(cfg.loopDelay)
         end
     end)
     task.spawn(function()
-        while ON do
+        while ON and farmGen == gen do
             pcall(function()
                 antiAfkPulse()
                 readHudStats()
@@ -1311,14 +1383,15 @@ local function start()
             task.wait(5)
         end
     end)
-    log("ON treo ca " .. cfg.shiftGoal .. " | SK auto | anti-AFK")
+    log("AUTO FARM ON | P:" .. #promptCache .. " R:" .. #remotes)
 end
 
 local function stop()
+    farmGen = farmGen + 1
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     conns = {}
     setBoost(false)
-    setStatus("off")
+    setStatus(statusLine("OFF"))
 end
 
 -- UI: HUD bottom-left | ESC opens centered menu on top layer
@@ -1410,10 +1483,6 @@ local function refreshBtn()
 end
 
 local function setAuto(on)
-    if on == ON then
-        refreshBtn()
-        return
-    end
     ON = on
     refreshBtn()
     if ON then
